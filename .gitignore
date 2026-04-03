@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+.coverage
+.media/
+*.db
+*.sqlite3
+.DS_Store
+.venv/
+.venv.broken-*
+frontend/node_modules/
