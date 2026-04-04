@@ -7,7 +7,11 @@ export interface JobSummary {
   media_mime_type: string | null;
   media_ingest_metadata: Record<string, unknown>;
   media_display_name: string | null;
+  conversation_title: string | null;
+  review_status: ReviewStatus;
 }
+
+export type ReviewStatus = "not_started" | "in_progress" | "completed";
 
 export interface AnalysisResultResponse {
   politeness_score: number;
@@ -25,6 +29,11 @@ export interface SentenceUnitResponse {
   text: string;
   speaker_id: string | null;
   speaker_confidence: number | null;
+  display_text: string;
+  display_speaker_id: string | null;
+  manual_text: string | null;
+  manual_speaker_id: string | null;
+  is_edited: boolean;
   source_segment_ids: number[];
   sentence_metadata: Record<string, unknown>;
   analysis_result: AnalysisResultResponse | null;
@@ -58,5 +67,22 @@ export interface StreamSessionResponse {
 
 export interface PlaybackDocument {
   transcriptId: string;
+  conversationTitle: string | null;
+  speakerLabels: Record<string, string>;
+  reviewStatus: ReviewStatus;
+  reviewedAt: string | null;
   sentenceUnits: SentenceUnitResponse[];
+}
+
+export interface TranscriptReviewSentenceOverride {
+  sentence_unit_id: string;
+  manual_text: string | null;
+  manual_speaker_id: string | null;
+}
+
+export interface TranscriptReviewUpdateRequest {
+  conversation_title: string | null;
+  speaker_labels: Record<string, string>;
+  review_status: ReviewStatus;
+  sentence_overrides: TranscriptReviewSentenceOverride[];
 }

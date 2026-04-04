@@ -48,6 +48,8 @@ class JobResponse(BaseModel):
     media_mime_type: str | None = None
     media_ingest_metadata: dict = Field(default_factory=dict)
     media_display_name: str | None = None
+    conversation_title: str | None = None
+    review_status: str = "not_started"
 
 
 class JobListResponse(BaseModel):
@@ -107,6 +109,11 @@ class SentenceUnitResponse(BaseModel):
     text: str
     speaker_id: str | None
     speaker_confidence: float | None
+    display_text: str
+    display_speaker_id: str | None
+    manual_text: str | None
+    manual_speaker_id: str | None
+    is_edited: bool
     source_segment_ids: list
     sentence_metadata: dict
     analysis_result: AnalysisResultResponse | None
@@ -135,6 +142,27 @@ class TranscriptResponse(BaseModel):
     language_code: str | None
     full_text: str
     transcript_metadata: dict
+    conversation_title: str | None = None
+    speaker_labels: dict[str, str] = Field(default_factory=dict)
+    review_status: str = "not_started"
+    reviewed_at: datetime | None = None
     created_at: datetime
     segments: list[TranscriptSegmentResponse]
     sentence_units: list[SentenceUnitResponse]
+
+
+class SentenceReviewUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sentence_unit_id: str = Field(min_length=1)
+    manual_text: str | None = None
+    manual_speaker_id: str | None = None
+
+
+class TranscriptReviewUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_title: str | None = None
+    speaker_labels: dict[str, str] = Field(default_factory=dict)
+    review_status: str = Field(default="in_progress", min_length=1)
+    sentence_overrides: list[SentenceReviewUpdateRequest] = Field(default_factory=list)

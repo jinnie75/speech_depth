@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +21,37 @@ class Transcript(IdMixin, TimestampMixin, Base):
     media_asset = relationship("MediaAsset", back_populates="transcripts")
     segments = relationship("TranscriptSegment", back_populates="transcript", cascade="all, delete-orphan")
     sentence_units = relationship("SentenceUnit", back_populates="transcript", cascade="all, delete-orphan")
+
+    @property
+    def conversation_title(self) -> str | None:
+        value = self.transcript_metadata.get("conversation_title")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @property
+    def speaker_labels(self) -> dict[str, str]:
+        raw_value = self.transcript_metadata.get("speaker_labels")
+        if not isinstance(raw_value, dict):
+            return {}
+        return {
+            str(speaker_id): label.strip()
+            for speaker_id, label in raw_value.items()
+            if isinstance(label, str) and label.strip()
+        }
+
+    @property
+    def review_status(self) -> str:
+        value = self.transcript_metadata.get("review_status")
+        return value if isinstance(value, str) and value.strip() else "not_started"
+
+    @property
+    def reviewed_at(self) -> datetime | None:
+        value = self.transcript_metadata.get("reviewed_at")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
 
 
 class TranscriptSegment(IdMixin, TimestampMixin, Base):
@@ -57,3 +90,27 @@ class SentenceUnit(IdMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+
+    @property
+    def manual_text(self) -> str | None:
+        value = self.sentence_metadata.get("manual_text")
+        return value if isinstance(value, str) else None
+
+    @property
+    def manual_speaker_id(self) -> str | None:
+        value = self.sentence_metadata.get("manual_speaker_id")
+        return value if isinstance(value, str) and value.strip() else None
+
+    @property
+    def display_text(self) -> str:
+        manual_text = self.manual_text
+        return manual_text if manual_text is not None else self.text
+
+    @property
+    def display_speaker_id(self) -> str | None:
+        manual_speaker_id = self.manual_speaker_id
+        return manual_speaker_id if manual_speaker_id is not None else self.speaker_id
+
+    @property
+    def is_edited(self) -> bool:
+        return self.manual_text is not None or self.manual_speaker_id is not None

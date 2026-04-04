@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from asr_viz.api.schemas import (
     CreateJobRequest,
+    TranscriptReviewUpdateRequest,
     CreateStreamSessionRequest,
     JobListResponse,
     JobResponse,
@@ -37,6 +39,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+ALLOWED_REVIEW_STATUSES = {"not_started", "in_progress", "completed"}
 
 
 @app.on_event("startup")
@@ -78,7 +82,7 @@ def list_jobs(limit: int = 20, session: Session = Depends(get_session)) -> JobLi
         select(ProcessingJob)
         .order_by(ProcessingJob.created_at.desc())
         .limit(capped_limit)
-        .options(selectinload(ProcessingJob.media_asset))
+        .options(selectinload(ProcessingJob.media_asset), selectinload(ProcessingJob.transcript))
     ).all()
     return JobListResponse(jobs=jobs)
 
@@ -174,7 +178,7 @@ def get_job(job_id: str, session: Session = Depends(get_session)) -> ProcessingJ
     job = session.scalar(
         select(ProcessingJob)
         .where(ProcessingJob.id == job_id)
-        .options(selectinload(ProcessingJob.media_asset))
+        .options(selectinload(ProcessingJob.media_asset), selectinload(ProcessingJob.transcript))
     )
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
@@ -219,3 +223,109 @@ def get_transcript(transcript_id: str, session: Session = Depends(get_session)) 
     if transcript is None:
         raise HTTPException(status_code=404, detail="transcript not found")
     return transcript
+
+
+@app.patch("/transcripts/{transcript_id}/review", response_model=TranscriptResponse)
+def update_transcript_review(
+    transcript_id: str,
+    request: TranscriptReviewUpdateRequest,
+    session: Session = Depends(get_session),
+) -> Transcript:
+    transcript = session.scalar(
+        select(Transcript)
+        .where(Transcript.id == transcript_id)
+        .options(
+            selectinload(Transcript.segments),
+            selectinload(Transcript.sentence_units).selectinload(SentenceUnit.analysis_result),
+        )
+    )
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="transcript not found")
+
+    allowed_speaker_ids = {sentence.speaker_id for sentence in transcript.sentence_units if sentence.speaker_id}
+
+    cleaned_speaker_labels: dict[str, str] = {}
+    for speaker_id, label in request.speaker_labels.items():
+        if speaker_id not in allowed_speaker_ids:
+            raise HTTPException(status_code=400, detail=f"invalid speaker id in speaker_labels: {speaker_id}")
+        if isinstance(label, str) and label.strip():
+            cleaned_speaker_labels[speaker_id] = label.strip()
+
+    sentence_units_by_id = {sentence.id: sentence for sentence in transcript.sentence_units}
+    seen_sentence_ids: set[str] = set()
+    for override in request.sentence_overrides:
+        if override.sentence_unit_id not in sentence_units_by_id:
+            raise HTTPException(status_code=400, detail=f"invalid sentence id: {override.sentence_unit_id}")
+        if override.sentence_unit_id in seen_sentence_ids:
+            raise HTTPException(status_code=400, detail=f"duplicate sentence id: {override.sentence_unit_id}")
+        seen_sentence_ids.add(override.sentence_unit_id)
+        if override.manual_speaker_id is not None and override.manual_speaker_id not in allowed_speaker_ids:
+            raise HTTPException(status_code=400, detail=f"invalid speaker id in sentence override: {override.manual_speaker_id}")
+
+    review_status = request.review_status.strip()
+    if review_status not in ALLOWED_REVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid review status: {request.review_status}")
+
+    transcript_metadata = dict(transcript.transcript_metadata)
+    conversation_title = request.conversation_title.strip() if isinstance(request.conversation_title, str) else ""
+    transcript_metadata["conversation_title"] = conversation_title or None
+    transcript_metadata["speaker_labels"] = cleaned_speaker_labels
+    transcript_metadata["review_status"] = review_status
+    transcript_metadata["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    transcript.transcript_metadata = transcript_metadata
+
+    for override in request.sentence_overrides:
+        sentence = sentence_units_by_id[override.sentence_unit_id]
+        sentence_metadata = dict(sentence.sentence_metadata)
+
+        if override.manual_text is None:
+            sentence_metadata.pop("manual_text", None)
+        else:
+            sentence_metadata["manual_text"] = override.manual_text
+
+        if override.manual_speaker_id is None:
+            sentence_metadata.pop("manual_speaker_id", None)
+        else:
+            sentence_metadata["manual_speaker_id"] = override.manual_speaker_id
+
+        if "manual_text" in sentence_metadata or "manual_speaker_id" in sentence_metadata:
+            sentence_metadata["edited_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            sentence_metadata.pop("edited_at", None)
+
+        sentence.sentence_metadata = sentence_metadata
+
+    session.commit()
+    session.refresh(transcript)
+    return transcript
+
+
+def _delete_transcript(transcript_id: str, session: Session) -> Response:
+    transcript = session.scalar(
+        select(Transcript)
+        .where(Transcript.id == transcript_id)
+        .options(selectinload(Transcript.segments), selectinload(Transcript.sentence_units))
+    )
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="transcript not found")
+
+    linked_job = session.scalar(select(ProcessingJob).where(ProcessingJob.transcript_id == transcript.id))
+    if linked_job is None and transcript.job_id:
+        linked_job = session.get(ProcessingJob, transcript.job_id)
+
+    if linked_job is not None:
+        linked_job.transcript_id = None
+
+    session.delete(transcript)
+    session.commit()
+    return Response(status_code=204)
+
+
+@app.delete("/transcripts/{transcript_id}", status_code=204)
+def delete_transcript(transcript_id: str, session: Session = Depends(get_session)) -> Response:
+    return _delete_transcript(transcript_id, session)
+
+
+@app.post("/transcripts/{transcript_id}/delete", status_code=204)
+def delete_transcript_via_post(transcript_id: str, session: Session = Depends(get_session)) -> Response:
+    return _delete_transcript(transcript_id, session)

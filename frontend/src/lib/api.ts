@@ -4,6 +4,7 @@ import type {
   PlaybackDocument,
   SentenceUnitResponse,
   StreamSessionResponse,
+  TranscriptReviewUpdateRequest,
 } from "./types";
 
 const DEFAULT_BASE_URL = import.meta.env.VITE_ASR_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -37,11 +38,22 @@ export async function fetchCompletedJobs(limit = 50): Promise<JobSummary[]> {
 
 export async function loadPlaybackDocument(transcriptId?: string): Promise<PlaybackDocument> {
   const resolvedTranscriptId = transcriptId || (await fetchLatestCompletedTranscriptId());
-  const transcript = await fetchJson<{ id: string; sentence_units: SentenceUnitResponse[] }>(
+  const transcript = await fetchJson<{
+    id: string;
+    conversation_title: string | null;
+    speaker_labels: Record<string, string>;
+    review_status: PlaybackDocument["reviewStatus"];
+    reviewed_at: string | null;
+    sentence_units: SentenceUnitResponse[];
+  }>(
     `/transcripts/${resolvedTranscriptId}`,
   );
   return {
     transcriptId: resolvedTranscriptId,
+    conversationTitle: transcript.conversation_title,
+    speakerLabels: transcript.speaker_labels ?? {},
+    reviewStatus: transcript.review_status,
+    reviewedAt: transcript.reviewed_at,
     sentenceUnits: [...transcript.sentence_units].sort(
       (left, right) => left.utterance_index - right.utterance_index || left.start_ms - right.start_ms,
     ),
@@ -99,4 +111,59 @@ export async function finalizeStreamSession(sessionId: string): Promise<StreamSe
 
 export async function fetchStreamSession(sessionId: string): Promise<StreamSessionResponse> {
   return fetchJson<StreamSessionResponse>(`/stream-sessions/${sessionId}`);
+}
+
+export async function saveTranscriptReview(
+  transcriptId: string,
+  payload: TranscriptReviewUpdateRequest,
+): Promise<PlaybackDocument> {
+  const response = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}/review`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to save transcript review (${response.status})`);
+  }
+  const transcript = (await response.json()) as {
+    id: string;
+    conversation_title: string | null;
+    speaker_labels: Record<string, string>;
+    review_status: PlaybackDocument["reviewStatus"];
+    reviewed_at: string | null;
+    sentence_units: SentenceUnitResponse[];
+  };
+  return {
+    transcriptId: transcript.id,
+    conversationTitle: transcript.conversation_title,
+    speakerLabels: transcript.speaker_labels ?? {},
+    reviewStatus: transcript.review_status,
+    reviewedAt: transcript.reviewed_at,
+    sentenceUnits: [...transcript.sentence_units].sort(
+      (left, right) => left.utterance_index - right.utterance_index || left.start_ms - right.start_ms,
+    ),
+  };
+}
+
+export async function deleteTranscript(transcriptId: string): Promise<void> {
+  const response = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}`, {
+    method: "DELETE",
+  });
+  if (response.ok) {
+    return;
+  }
+
+  if (response.status === 405) {
+    const fallbackResponse = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}/delete`, {
+      method: "POST",
+    });
+    if (fallbackResponse.ok) {
+      return;
+    }
+    throw new Error(`Failed to delete transcript (${fallbackResponse.status})`);
+  }
+
+  throw new Error(`Failed to delete transcript (${response.status})`);
 }

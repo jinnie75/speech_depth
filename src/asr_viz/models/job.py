@@ -54,3 +54,15 @@ class ProcessingJob(IdMixin, TimestampMixin, Base):
         source_uri = self.media_asset.source_uri
         source_name = Path(source_uri).name
         return source_name or source_uri
+
+    @property
+    def conversation_title(self) -> str | None:
+        if self.transcript is None:
+            return None
+        return self.transcript.conversation_title
+
+    @property
+    def review_status(self) -> str:
+        if self.transcript is None:
+            return "not_started"
+        return self.transcript.review_status
