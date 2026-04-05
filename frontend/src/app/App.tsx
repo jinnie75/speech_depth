@@ -396,6 +396,7 @@ export function App() {
   const [mediaDurationMs, setMediaDurationMs] = useState(0);
   const [isMediaPlaying, setIsMediaPlaying] = useState(false);
   const [isMediaMuted, setIsMediaMuted] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const mediaObjectUrlRef = useRef<string | null>(null);
   const pollingSessionIdRef = useRef<string | null>(null);
   const mediaElementRef = useRef<HTMLVideoElement | null>(null);
@@ -757,13 +758,8 @@ export function App() {
     }
   };
 
-  const handleDeleteTranscript = async () => {
+  const confirmDeleteTranscript = async () => {
     if (!document) {
-      return;
-    }
-
-    const confirmed = window.confirm("Delete this transcript? This removes it from the library and cannot be undone.");
-    if (!confirmed) {
       return;
     }
 
@@ -772,6 +768,7 @@ export function App() {
 
     try {
       await deleteTranscript(document.transcriptId);
+      setIsDeleteConfirmOpen(false);
       setDocument(null);
       setReviewDraft(null);
       setMediaSrc("");
@@ -1050,7 +1047,12 @@ export function App() {
                 />
               </div>
               <div className="review-toolbar__actions">
-                <button type="button" className="ghost-button" onClick={() => void handleDeleteTranscript()} disabled={saveState === "saving"}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setIsDeleteConfirmOpen(true)}
+                  disabled={saveState === "saving"}
+                >
                   Delete Transcript
                 </button>
                 <button type="button" className="ghost-button" onClick={() => setMode("select")}>
@@ -1193,6 +1195,24 @@ export function App() {
             </article>
           </section>
         </>
+      ) : null}
+
+      {isDeleteConfirmOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="delete-transcript-title">
+            <p className="eyebrow">Confirm Delete</p>
+            <h2 id="delete-transcript-title">Delete this transcript?</h2>
+            <p className="surface-note">This removes the transcript from the library and cannot be undone.</p>
+            <div className="modal-card__actions">
+              <button type="button" className="ghost-button" onClick={() => setIsDeleteConfirmOpen(false)} disabled={saveState === "saving"}>
+                Cancel
+              </button>
+              <button type="button" className="submit-upload" onClick={() => void confirmDeleteTranscript()} disabled={saveState === "saving"}>
+                {saveState === "saving" ? "Deleting..." : "Delete Transcript"}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {mode === "playback" && document ? (

@@ -38,6 +38,15 @@ interface SpeakerCluster {
   utteranceCount: number;
 }
 
+interface SpeakerSection {
+  speaker: ConversationLandscapeSpeaker;
+  color: string;
+  outerColor: string;
+  levelCount: number;
+  washHref: string | null;
+  paths: { level: number; d: string }[];
+}
+
 const VIEWBOX_WIDTH = 1200;
 const VIEWBOX_HEIGHT = 620;
 const GRID_COLS = 156;
@@ -99,6 +108,63 @@ function mixColors(startColor: string, endColor: string, amount: number): string
   return `rgb(${Math.round(lerp(start.r, end.r, mix))}, ${Math.round(lerp(start.g, end.g, mix))}, ${Math.round(
     lerp(start.b, end.b, mix),
   )})`;
+}
+
+function mixRgb(
+  startColor: string,
+  endColor: string,
+  amount: number,
+): { r: number; g: number; b: number } {
+  const start = hexToRgb(startColor);
+  const end = hexToRgb(endColor);
+  const mix = clamp(amount, 0, 1);
+
+  return {
+    r: Math.round(lerp(start.r, end.r, mix)),
+    g: Math.round(lerp(start.g, end.g, mix)),
+    b: Math.round(lerp(start.b, end.b, mix)),
+  };
+}
+
+function buildFieldWashDataUrl(
+  field: number[][],
+  maxFieldValue: number,
+  innerColor: string,
+  outerColor: string,
+): string | null {
+  if (maxFieldValue <= 0.04 || typeof document === "undefined") {
+    return null;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = GRID_COLS;
+  canvas.height = GRID_ROWS;
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return null;
+  }
+
+  const image = context.createImageData(GRID_COLS, GRID_ROWS);
+
+  for (let yIndex = 0; yIndex < GRID_ROWS; yIndex += 1) {
+    for (let xIndex = 0; xIndex < GRID_COLS; xIndex += 1) {
+      const normalized = clamp(field[xIndex][yIndex] / maxFieldValue, 0, 1);
+      const density = Math.pow(normalized, 0.86);
+      const fade = clamp((normalized - 0.035) / 0.965, 0, 1);
+      const alpha = Math.pow(fade, 1.35) * 0.72;
+      const color = mixRgb(outerColor, innerColor, Math.pow(density, 0.72));
+      const pixelIndex = (yIndex * GRID_COLS + xIndex) * 4;
+
+      image.data[pixelIndex] = color.r;
+      image.data[pixelIndex + 1] = color.g;
+      image.data[pixelIndex + 2] = color.b;
+      image.data[pixelIndex + 3] = Math.round(alpha * 255);
+    }
+  }
+
+  context.putImageData(image, 0, 0);
+  return canvas.toDataURL("image/png");
 }
 
 function getContourStroke(pathIndex: number, pathCount: number, outerColor: string, innerColor: string): string {
@@ -624,16 +690,7 @@ export function ConversationLandscape({
   const maxSpeakerDurationMs = speakers.reduce((largest, speaker) => Math.max(largest, speaker.totalDurationMs), 1);
   const totalUtteranceCount = Math.max(utterances.length, 1);
   const occupancyField = createGrid();
-  const sectionsById = new Map<
-    string,
-    {
-      speaker: ConversationLandscapeSpeaker;
-      color: string;
-      outerColor: string;
-      levelCount: number;
-      paths: { level: number; d: string }[];
-    }
-  >();
+  const sectionsById = new Map<string, SpeakerSection>();
   const buildOrder = [...speakers].sort((left, right) => right.totalDurationMs - left.totalDurationMs);
 
   buildOrder.forEach((speaker) => {
@@ -759,12 +816,15 @@ export function ConversationLandscape({
         : Array.from({ length: levelCount }, (_, levelIndex) =>
             lerp(maxFieldValue * 0.12, maxFieldValue * 0.78, (levelIndex + 1) / (levelCount + 1)),
           );
+    const color = SPEAKER_COLORS[speakerIndex % SPEAKER_COLORS.length];
+    const outerColor = SPEAKER_OUTER_COLORS[speakerIndex % SPEAKER_OUTER_COLORS.length];
 
     sectionsById.set(speaker.id, {
       speaker,
-      color: SPEAKER_COLORS[speakerIndex % SPEAKER_COLORS.length],
-      outerColor: SPEAKER_OUTER_COLORS[speakerIndex % SPEAKER_OUTER_COLORS.length],
+      color,
+      outerColor,
       levelCount: levels.length,
+      washHref: buildFieldWashDataUrl(separatedField, maxFieldValue, color, outerColor),
       paths: levels
         .map((level) => ({
           level,
@@ -817,9 +877,23 @@ export function ConversationLandscape({
           y={MAP_PADDING_Y}
           width={MAP_WIDTH}
           height={MAP_HEIGHT}
-          fill="none"
+          fill="rgba(255, 255, 255, 0.34)"
           stroke="rgba(23, 24, 28, 0.08)"
         />
+        {speakerSections.map(({ speaker, washHref }) =>
+          washHref ? (
+            <image
+              key={`${speaker.id}-wash`}
+              href={washHref}
+              x={MAP_PADDING_X}
+              y={MAP_PADDING_Y}
+              width={MAP_WIDTH}
+              height={MAP_HEIGHT}
+              preserveAspectRatio="none"
+              opacity={speaker.opacity * 0.92}
+            />
+          ) : null,
+        )}
         {speakerSections.map(({ speaker, color, outerColor, paths }) => (
           <g key={speaker.id} opacity={speaker.opacity}>
             {paths.map((path, pathIndex) => (
