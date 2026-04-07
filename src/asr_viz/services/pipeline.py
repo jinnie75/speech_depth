@@ -8,7 +8,7 @@ from asr_viz.models.common import JobStage, JobStatus, utcnow
 from asr_viz.models.job import ProcessingJob
 from asr_viz.models.transcript import SentenceUnit, Transcript, TranscriptSegment
 from asr_viz.pipeline.segmentation import segment_transcript
-from asr_viz.providers.analysis import AnalysisProvider
+from asr_viz.providers.analysis_v2 import AnalysisProvider
 from asr_viz.providers.diarization import DiarizationProvider
 from asr_viz.providers.transcription import TranscriptionProvider
 from asr_viz.services.media import resolve_media_source
@@ -170,7 +170,7 @@ def _speaker_count_override(ingest_metadata: dict | None) -> int | None:
             parsed = int(explicit_value)
         except (TypeError, ValueError):
             parsed = None
-        if parsed in {1, 2}:
+        if parsed in {1, 2, 3}:
             return parsed
 
     speaker_mode = metadata.get("speaker_mode")

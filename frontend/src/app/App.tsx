@@ -23,8 +23,9 @@ const FALLBACK_SPEAKER_ID = "UNKNOWN_SPEAKER";
 const FALLBACK_SPEAKER_LABEL = "Speaker";
 const PRELOAD_TRANSCRIPT_ID = DEFAULT_MEDIA_SRC ? TRANSCRIPT_ID : undefined;
 const DEFAULT_SPEAKER_COUNT = 2;
+const SPEAKER_COUNT_OPTIONS: SpeakerCount[] = [1, 2, 3];
 
-type SpeakerCount = 1 | 2;
+type SpeakerCount = 1 | 2 | 3;
 type AppMode = "select" | "review" | "playback";
 
 interface SpeakerSummary {
@@ -43,6 +44,8 @@ interface UtteranceSummary {
   endMs: number;
   durationMs: number;
   politenessScore: number;
+  hasContourSignal: boolean;
+  substanceExcerpt: string | null;
 }
 
 interface ProcessedTranscriptOption {
@@ -137,6 +140,49 @@ function formatTimestamp(totalMs: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function hasAnalysisSignal(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.values(value as Record<string, unknown>).some((entry) => {
+    if (Array.isArray(entry)) {
+      return entry.length > 0;
+    }
+    if (entry && typeof entry === "object") {
+      return Object.keys(entry as Record<string, unknown>).length > 0;
+    }
+    return Boolean(entry);
+  });
+}
+
+function shouldIncreaseContourLines(analysisPayload: Record<string, unknown> | null | undefined): boolean {
+  if (!analysisPayload) {
+    return false;
+  }
+
+  const hedgingPayload = analysisPayload.hedging;
+  const substancePayload = analysisPayload.substance;
+  return hasAnalysisSignal(hedgingPayload) || hasAnalysisSignal(substancePayload);
+}
+
+function stringifyAnalysisPayload(analysisPayload: Record<string, unknown> | null | undefined): string {
+  if (!analysisPayload) {
+    return "{}";
+  }
+  return JSON.stringify(analysisPayload, null, 2);
+}
+
+function extractSubstanceExcerpt(analysisPayload: Record<string, unknown> | null | undefined): string | null {
+  const excerpt = analysisPayload?.substance;
+  if (!excerpt || typeof excerpt !== "object" || Array.isArray(excerpt)) {
+    return null;
+  }
+
+  const value = (excerpt as Record<string, unknown>).excerpt;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function buildUtterances(document: PlaybackDocument): UtteranceSummary[] {
   return [...document.sentenceUnits]
     .map((sentence) => ({
@@ -147,6 +193,8 @@ function buildUtterances(document: PlaybackDocument): UtteranceSummary[] {
       endMs: sentence.end_ms,
       durationMs: Math.max(1, sentence.end_ms - sentence.start_ms),
       politenessScore: sentence.analysis_result?.politeness_score ?? 0.5,
+      hasContourSignal: shouldIncreaseContourLines(sentence.analysis_result?.analysis_payload),
+      substanceExcerpt: extractSubstanceExcerpt(sentence.analysis_result?.analysis_payload),
     }))
     .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
 }
@@ -204,6 +252,22 @@ function findActiveUtterance(utterances: UtteranceSummary[], currentTimeMs: numb
   }
 
   return latestStarted;
+}
+
+function findPreviousUtterance(
+  utterances: UtteranceSummary[],
+  activeUtterance: UtteranceSummary | null,
+): UtteranceSummary | null {
+  if (!activeUtterance) {
+    return null;
+  }
+
+  const activeIndex = utterances.findIndex((utterance) => utterance.id === activeUtterance.id);
+  if (activeIndex <= 0) {
+    return null;
+  }
+
+  return utterances[activeIndex - 1] ?? null;
 }
 
 function fileToObjectUrl(file: File): string {
@@ -580,7 +644,12 @@ export function App() {
   const speakerLabels = reviewDraft?.speakerLabels ?? document?.speakerLabels ?? {};
   const speakers = buildSpeakerSummaries(utterances, speakerLabels);
   const activeUtterance = playbackStarted || currentTimeMs > 0 ? findActiveUtterance(utterances, currentTimeMs) : null;
+  const excerptUtterance = findPreviousUtterance(utterances, activeUtterance);
+  const activeSentence =
+    document?.sentenceUnits.find((sentence) => sentence.id === activeUtterance?.id) ?? null;
   const isReviewDirty = isReviewDraftDirty(document, reviewDraft);
+  const isTranscriptProcessing =
+    streamSession !== null && ["open", "queued", "processing"].includes(streamSession.status);
   const landscapeSpeakers = speakers.map((speaker, index) => ({
     id: speaker.id,
     label: speaker.label,
@@ -593,6 +662,8 @@ export function App() {
     id: utterance.id,
     speakerId: utterance.speakerId,
     politenessScore: utterance.politenessScore,
+    hasContourSignal: utterance.hasContourSignal,
+    substanceExcerpt: utterance.substanceExcerpt,
     progress: clamp((currentTimeMs - utterance.startMs) / utterance.durationMs, 0, 1),
     order: index,
   }));
@@ -930,82 +1001,93 @@ export function App() {
     <main className="shell">
       {mode === "select" ? (
         <>
-          <section className="onboarding-hero">
-            <div className="onboarding-hero__copy">
-              <p className="eyebrow">Onboarding</p>
-              <p className="lede">
-                Upload a new `.mov` or `.mp4`, choose how many speakers are expected, or reopen a transcript that is
-                already in the system.
-              </p>
-            </div>
-            <div className="onboarding-panel">
-              <div className="control-grid">
-                <label className="file-input">
-                  <span>Add File</span>
-                  <input type="file" accept=".mov,.mp4,video/mp4,video/quicktime" onChange={handleFileChange} />
-                </label>
-                <label className="speaker-mode">
-                  <span>Speakers</span>
-                  <select
-                    value={speakerCount}
-                    onChange={(event) => setSpeakerCount(Number.parseInt(event.target.value, 10) as SpeakerCount)}
-                    disabled={isUploading}
-                  >
-                    <option value="2">2</option>
-                    <option value="1">1</option>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  className="submit-upload"
-                  onClick={handleUploadSubmit}
-                  disabled={!pendingFile || isUploading}
-                >
-                  Submit
-                </button>
+          <section className="onboarding-stack">
+            <article className="surface-card onboarding-choice onboarding-choice--upload">
+              <div className="onboarding-choice__header">
+                <p className="eyebrow">Option 1</p>
+                <h2>Upload a file</h2>
               </div>
-              <div className="status-strip">
-                <span>{mediaName}</span>
-                <span>{speakerCount} speaker{speakerCount === 1 ? "" : "s"}</span>
-                {pendingFile ? <span>Ready to upload</span> : null}
-                {describeStreamStatus(streamSession, uploadProgress) ? (
-                  <span>{describeStreamStatus(streamSession, uploadProgress)}</span>
-                ) : null}
-              </div>
-            </div>
-          </section>
 
-          <section className="select-layout">
-            <article className="surface-card select-preview">
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">Current Preview</p>
-                  <h2>{pendingFile ? pendingFile.name : mediaName}</h2>
+              {isTranscriptProcessing ? (
+                <div className="upload-processing" aria-live="polite">
+                  <h3>Processing...</h3>
+                  <div className="upload-processing__bar" aria-hidden="true">
+                    <span className="upload-processing__bar-fill" />
+                  </div>
+                  <p className="upload-processing__copy">
+                    {describeStreamStatus(streamSession, uploadProgress) ?? "Your transcript is processing."}
+                  </p>
                 </div>
-                <p className="surface-note">
-                  {streamSession
-                    ? describeStreamStatus(streamSession, uploadProgress)
-                    : "Choose a file to begin, or reopen a finished transcript below."}
-                </p>
-              </div>
-              <video
-                className="hero__video"
-                src={mediaSrc || undefined}
-                controls
-                preload="metadata"
-                onPlay={() => setPlaybackStarted(true)}
-                onTimeUpdate={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
-                onSeeked={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
-              />
+              ) : !pendingFile ? (
+                <label className="upload-dropzone">
+                  <input type="file" accept=".mov,.mp4,video/mp4,video/quicktime" onChange={handleFileChange} />
+                  <span className="upload-dropzone__step">Step 1</span>
+                  <strong>add file</strong>
+                  <span className="upload-dropzone__hint">Choose a `.mov` or `.mp4` to start a new transcript.</span>
+                </label>
+              ) : (
+                <div className="upload-workflow">
+                  <div className="upload-workflow__file">
+                    <p className="upload-workflow__step">Step 1 complete</p>
+                    <h3>{pendingFile.name}</h3>
+                    <label className="ghost-button upload-workflow__replace">
+                      choose another file
+                      <input type="file" accept=".mov,.mp4,video/mp4,video/quicktime" onChange={handleFileChange} />
+                    </label>
+                  </div>
+
+                  <div className="upload-workflow__controls">
+                    <div className="speaker-step">
+                      <span className="speaker-step__label">Step 2 Select speakers</span>
+                      <div className="speaker-step__options" role="group" aria-label="Expected number of speakers">
+                        {SPEAKER_COUNT_OPTIONS.map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            className={`speaker-step__option${speakerCount === option ? " speaker-step__option--active" : ""}`}
+                            aria-pressed={speakerCount === option}
+                            onClick={() => setSpeakerCount(option)}
+                            disabled={isUploading}
+                          >
+                            {option}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="submit-upload"
+                      onClick={handleUploadSubmit}
+                      disabled={!pendingFile || isUploading}
+                    >
+                      Submit
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {pendingFile || streamSession ? (
+                <div className="status-strip onboarding-choice__status">
+                  {pendingFile && !isTranscriptProcessing ? (
+                    <span>{speakerCount} speaker{speakerCount === 1 ? "" : "s"} selected</span>
+                  ) : null}
+                  {pendingFile && !isTranscriptProcessing ? <span>Ready to upload</span> : null}
+                  {describeStreamStatus(streamSession, uploadProgress) ? (
+                    <span>{describeStreamStatus(streamSession, uploadProgress)}</span>
+                  ) : null}
+                </div>
+              ) : null}
             </article>
 
-            <article className="surface-card transcript-library">
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">Already Transcribed</p>
-                  <h2>Choose a saved conversation</h2>
-                </div>
-                <p className="surface-note">Unfinished items reopen review. Completed items jump straight to playback.</p>
+            <div className="onboarding-divider" aria-hidden="true">
+              <span>or</span>
+            </div>
+
+            <article className="surface-card onboarding-choice onboarding-choice--select">
+              <div className="onboarding-choice__header">
+                <p className="eyebrow">Option 2</p>
+                <h2>Choose a saved conversation</h2>
               </div>
               {processedTranscriptOptions.length === 0 ? (
                 <div className="empty-state">
@@ -1252,9 +1334,32 @@ export function App() {
               <ConversationLandscape
                 speakers={landscapeSpeakers}
                 utterances={landscapeUtterances}
+                activeUtteranceId={excerptUtterance?.id ?? null}
                 activeSpeakerId={activeUtterance?.speakerId ?? null}
                 activeTranscriptText={activeUtterance?.text ?? null}
               />
+            )}
+          </section>
+
+          <section className="current-payload surface-card">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Current Payload</p>
+                <h2>Active sentence analysis</h2>
+              </div>
+              <p className="surface-note">This updates with playback and shows the current sentence&apos;s `analysis_payload`.</p>
+            </div>
+            {activeSentence ? (
+              <div className="current-payload__body">
+                <p className="current-payload__text">{activeSentence.display_text}</p>
+                <pre className="current-payload__code">
+                  {stringifyAnalysisPayload(activeSentence.analysis_result?.analysis_payload)}
+                </pre>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <p>Start playback to inspect the active sentence payload.</p>
+              </div>
             )}
           </section>
         </>

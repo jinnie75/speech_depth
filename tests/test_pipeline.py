@@ -9,7 +9,7 @@ from asr_viz.db.base import Base
 from asr_viz.models.analysis import AnalysisResult
 from asr_viz.models.job import ProcessingJob
 from asr_viz.models.transcript import SentenceUnit, Transcript
-from asr_viz.providers.analysis import HeuristicAnalysisProvider
+from asr_viz.providers.analysis_v2 import HeuristicAnalysisProvider
 from asr_viz.providers.diarization import NoOpDiarizationProvider
 from asr_viz.providers.transcription import MockTranscriptionProvider
 from asr_viz.services.jobs import create_job
@@ -20,7 +20,8 @@ class PipelineTests(unittest.TestCase):
     def test_speaker_count_override_prefers_explicit_ingest_metadata_value(self) -> None:
         self.assertEqual(_speaker_count_override({"diarization_num_speakers": 1}), 1)
         self.assertEqual(_speaker_count_override({"diarization_num_speakers": "2"}), 2)
-        self.assertIsNone(_speaker_count_override({"diarization_num_speakers": 3}))
+        self.assertEqual(_speaker_count_override({"diarization_num_speakers": 3}), 3)
+        self.assertIsNone(_speaker_count_override({"diarization_num_speakers": 4}))
 
     def test_pipeline_processes_job_end_to_end(self) -> None:
         tmp_path = Path(self._testMethodName)
@@ -70,5 +71,7 @@ class PipelineTests(unittest.TestCase):
             self.assertIsNone(sentence_units[0].speaker_id)
             self.assertGreaterEqual(analysis_results[0].politeness_score, 0.0)
             self.assertLessEqual(analysis_results[0].semantic_confidence_score, 1.0)
+            self.assertIn("hedging", analysis_results[0].analysis_payload)
+            self.assertIn("substance", analysis_results[0].analysis_payload)
             self.assertIn("sentence_count", job.stage_details)
             self.assertEqual(job.asr_model_version, "mock-transcriber:v1")

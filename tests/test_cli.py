@@ -12,7 +12,7 @@ import asr_viz.api.main as api_main
 import asr_viz.db.session as db_session_module
 from asr_viz.db.base import Base
 from asr_viz.services import bootstrap as bootstrap_module
-from asr_viz.providers.analysis import HeuristicAnalysisProvider
+from asr_viz.providers.analysis_v2 import HeuristicAnalysisProvider
 from asr_viz.providers.diarization import NoOpDiarizationProvider
 from asr_viz.providers.transcription import MockTranscriptionProvider
 from asr_viz.services.pipeline import ProcessingPipeline

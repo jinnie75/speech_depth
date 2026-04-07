@@ -22,7 +22,7 @@ src/asr_viz/pipeline/__init__.py
 src/asr_viz/pipeline/segmentation.py
 src/asr_viz/pipeline/types.py
 src/asr_viz/providers/__init__.py
-src/asr_viz/providers/analysis.py
+src/asr_viz/providers/analysis_v2.py
 src/asr_viz/providers/diarization.py
 src/asr_viz/providers/transcription.py
 src/asr_viz/services/__init__.py
@@ -45,3 +45,4 @@ tests/test_diarization_provider.py
 tests/test_pipeline.py
 tests/test_segmentation.py
 tests/test_streaming_ingestion.py
+tests/test_transcript_review_api.py

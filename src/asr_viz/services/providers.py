@@ -1,5 +1,5 @@
 from asr_viz.core.settings import settings
-from asr_viz.providers.analysis import AnalysisProvider, HeuristicAnalysisProvider, OpenAIAnalysisProvider
+from asr_viz.providers.analysis_v2 import AnalysisProvider, HeuristicAnalysisProvider
 from asr_viz.providers.diarization import DiarizationProvider, NoOpDiarizationProvider, PyannoteDiarizationProvider
 from asr_viz.providers.transcription import (
     FasterWhisperTranscriptionProvider,
@@ -27,6 +27,4 @@ def build_diarization_provider() -> DiarizationProvider:
 
 
 def build_analysis_provider() -> AnalysisProvider:
-    if settings.openai_api_key:
-        return OpenAIAnalysisProvider(settings.openai_api_key, settings.analysis_model)
     return HeuristicAnalysisProvider()

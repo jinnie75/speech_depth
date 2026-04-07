@@ -12,14 +12,17 @@ Backend for media ingestion, timestamped transcription, optional speaker diariza
 
 ## Quick Start
 
-1. Set `DATABASE_URL` to a Postgres URL for normal use. If omitted, the app falls back to local SQLite for development.
-2. Optionally set `OPENAI_API_KEY` and `ANALYSIS_MODEL`.
-3. Install dependencies and run:
+1. Run `./scripts/setup_local.sh`.
+2. Add any remaining keys to `.env.local` if the setup prompt did not collect them.
+3. Start the API and worker:
 
 ```bash
-uvicorn asr_viz.api.main:app --reload
-python3 -m asr_viz.worker
+./scripts/setup_local.sh
+./scripts/run_api.sh
+./scripts/run_worker.sh
 ```
+
+The setup script creates or reuses `.venv`, installs the backend with `faster-whisper` and diarization dependencies, seeds `.env.local` and `frontend/.env` from their examples, and prompts for a Hugging Face token on first run. Real transcription is the default: `ENABLE_MOCK_TRANSCRIPTION=false`.
 
 ## Local CLI Workflow
 
@@ -34,25 +37,28 @@ python3 -m asr_viz.cli transcript --sentences 10
 
 Run `python3 -m asr_viz.cli worker` to keep processing queued jobs continuously.
 
+The worker wrapper accepts the same flags, for example:
+
+```bash
+./scripts/run_worker.sh --once
+```
+
 ## Frontend Expanse
 
-A new frontend scaffold lives in [`frontend/`](/Users/jinheeshim/Documents/ITP/thesis/v5_asr_viz/frontend/README.md). It reads completed transcript analysis from the API and maps each sentence into a 3D "expanse" scene:
+A new frontend scaffold lives in [`frontend/`](/Users/jinheeshim/Documents/ITP/thesis/v5_asr_viz/frontend/README.md). It reads completed transcript analysis from the API and maps each sentence into a conversation landscape:
 
-- time becomes horizontal position
-- semantic confidence lifts the node vertically
-- topics and speaker turns spread the scene in depth
-- main-message likelihood affects scale
-- topic shifts intensify glow and trail curvature
+- speaker regions are sized by total speaking duration
+- contour lines grow when a sentence has non-empty `hedging` or `substance` data in `analysis_payload`
+- the active utterance is shown beneath the visualizer during playback
+- raw `analysis_payload` JSON is printed below the visualizer for each sentence
 
 The frontend expects the existing `/jobs` and `/transcripts/{id}` endpoints and does not require schema changes to the backend.
 
 ## Environment Variables
 
 - `DATABASE_URL`
-- `OPENAI_API_KEY`
 - `HUGGINGFACE_TOKEN`
 - `ASR_MODEL`
-- `ANALYSIS_MODEL`
 - `DIARIZATION_MODEL`
 - `DIARIZATION_NUM_SPEAKERS`
 - `JOB_POLL_INTERVAL_SECONDS`
@@ -63,12 +69,12 @@ The frontend expects the existing `/jobs` and `/transcripts/{id}` endpoints and 
 Speaker diarization is optional and off by default. To enable it:
 
 ```bash
-pip install -e '.[diarization]'
-export HUGGINGFACE_TOKEN=your_token_here
-export DIARIZATION_NUM_SPEAKERS=2
+./scripts/setup_local.sh
 python3 -m asr_viz.cli submit /absolute/path/to/file.mp4 --mime-type video/mp4 --diarization
-python3 -m asr_viz.cli worker --once
+./scripts/run_worker.sh --once
 ```
+
+Set `DIARIZATION_NUM_SPEAKERS=2` in `.env.local` if you want to pin the speaker count.
 
 Sentence units will then include `speaker_id` and `speaker_confidence` when the diarization model can assign them.
 

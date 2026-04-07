@@ -7,4 +7,5 @@ __pycache__/
 .DS_Store
 .venv/
 .venv.broken-*
+.env.local
 frontend/node_modules/

@@ -11,6 +11,8 @@ interface ConversationLandscapeUtterance {
   id: string;
   speakerId: string;
   politenessScore: number;
+  hasContourSignal: boolean;
+  substanceExcerpt: string | null;
   progress: number;
   order: number;
 }
@@ -18,6 +20,7 @@ interface ConversationLandscapeUtterance {
 interface ConversationLandscapeProps {
   speakers: ConversationLandscapeSpeaker[];
   utterances: ConversationLandscapeUtterance[];
+  activeUtteranceId: string | null;
   activeSpeakerId: string | null;
   activeTranscriptText: string | null;
 }
@@ -45,6 +48,14 @@ interface SpeakerSection {
   levelCount: number;
   washHref: string | null;
   paths: { level: number; d: string }[];
+}
+
+interface ActiveExcerptLabel {
+  x: number;
+  y: number;
+  lines: string[];
+  color: string;
+  align: "start" | "end";
 }
 
 const VIEWBOX_WIDTH = 1200;
@@ -182,6 +193,50 @@ function formatDuration(totalDurationMs: number): string {
     return `${seconds.toFixed(1)}s`;
   }
   return `${seconds.toFixed(2)}s`;
+}
+
+function wrapExcerpt(text: string, maxCharsPerLine: number = 28, maxLines: number = 3): string[] {
+  const words = text.trim().split(/\s+/);
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxCharsPerLine) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      lines.push(current);
+      current = word;
+    } else {
+      lines.push(word.slice(0, maxCharsPerLine));
+      current = word.slice(maxCharsPerLine);
+    }
+
+    if (lines.length === maxLines - 1) {
+      break;
+    }
+  }
+
+  if (lines.length < maxLines && current) {
+    lines.push(current);
+  }
+
+  if (lines.length > maxLines) {
+    return lines.slice(0, maxLines);
+  }
+
+  if (words.length > 0 && lines.length === maxLines) {
+    const consumed = lines.join(" ").trim();
+    if (consumed.length < text.trim().length) {
+      const lastLine = lines[maxLines - 1];
+      lines[maxLines - 1] = lastLine.length > maxCharsPerLine - 1 ? `${lastLine.slice(0, maxCharsPerLine - 1)}…` : `${lastLine}…`;
+    }
+  }
+
+  return lines;
 }
 
 function createGrid(): number[][] {
@@ -684,6 +739,7 @@ function buildContourPath(field: number[][], level: number): string {
 export function ConversationLandscape({
   speakers,
   utterances,
+  activeUtteranceId,
   activeSpeakerId,
   activeTranscriptText,
 }: ConversationLandscapeProps) {
@@ -691,10 +747,13 @@ export function ConversationLandscape({
   const totalUtteranceCount = Math.max(utterances.length, 1);
   const occupancyField = createGrid();
   const sectionsById = new Map<string, SpeakerSection>();
+  const activeExcerptLabel = { current: null as ActiveExcerptLabel | null };
   const buildOrder = [...speakers].sort((left, right) => right.totalDurationMs - left.totalDurationMs);
 
   buildOrder.forEach((speaker) => {
     const speakerIndex = speakers.findIndex((entry) => entry.id === speaker.id);
+    const color = SPEAKER_COLORS[speakerIndex % SPEAKER_COLORS.length];
+    const outerColor = SPEAKER_OUTER_COLORS[speakerIndex % SPEAKER_OUTER_COLORS.length];
     const speakerUtterances = utterances.filter((utterance) => utterance.speakerId === speaker.id);
     const talkShare = clamp(speaker.totalDurationMs / maxSpeakerDurationMs, 0, 1);
     const field = createGrid();
@@ -710,7 +769,7 @@ export function ConversationLandscape({
       addTerritoryWash(field, speaker.id, spokenStrength, talkShare, region);
     }
 
-    let politeContourCount = 0;
+    let contourSignalCount = 0;
     const clusters: SpeakerCluster[] = [];
 
     speakerUtterances.forEach((utterance, utteranceIndex) => {
@@ -718,8 +777,8 @@ export function ConversationLandscape({
         return;
       }
 
-      if (utterance.politenessScore > 0.5) {
-        politeContourCount += 1;
+      if (utterance.hasContourSignal) {
+        contourSignalCount += 1;
       }
 
       const globalSpread = utterance.order / totalUtteranceCount;
@@ -795,6 +854,21 @@ export function ConversationLandscape({
         utterance.progress,
       );
 
+      if (utterance.id === activeUtteranceId && utterance.substanceExcerpt) {
+        const labelT = clamp(Math.min(utterance.progress * 0.72, 0.68), 0.2, 0.68);
+        const labelPoint = quadraticPoint(startPoint, controlPoint, endPoint, labelT);
+        const labelOffsetY = speaker.side === "right" ? -18 : 18;
+        const labelOffsetX = speaker.side === "right" ? -14 : 14;
+
+        activeExcerptLabel.current = {
+          x: clamp(labelPoint.x + labelOffsetX, MAP_PADDING_X + 30, VIEWBOX_WIDTH - MAP_PADDING_X - 30),
+          y: clamp(labelPoint.y + labelOffsetY, MAP_PADDING_Y + 26, VIEWBOX_HEIGHT - MAP_PADDING_Y - 26),
+          lines: wrapExcerpt(utterance.substanceExcerpt),
+          color,
+          align: speaker.side === "right" ? "end" : "start",
+        };
+      }
+
       if (startSelection.clusterIndex === null) {
         clusters.push({ tail: nextTail, utteranceCount: 1 });
       } else {
@@ -809,15 +883,13 @@ export function ConversationLandscape({
     const separatedField = suppressOverlap(smoothedField, occupancyField);
     accumulateField(occupancyField, separatedField, 0.55);
     const maxFieldValue = separatedField.reduce((largest, column) => Math.max(largest, ...column), 0);
-    const levelCount = Math.max(1, politeContourCount + 1);
+    const levelCount = Math.max(1, contourSignalCount + 1);
     const levels =
       progressedUtterances.length === 0 || maxFieldValue <= 0.04
         ? []
         : Array.from({ length: levelCount }, (_, levelIndex) =>
             lerp(maxFieldValue * 0.12, maxFieldValue * 0.78, (levelIndex + 1) / (levelCount + 1)),
           );
-    const color = SPEAKER_COLORS[speakerIndex % SPEAKER_COLORS.length];
-    const outerColor = SPEAKER_OUTER_COLORS[speakerIndex % SPEAKER_OUTER_COLORS.length];
 
     sectionsById.set(speaker.id, {
       speaker,
@@ -838,33 +910,24 @@ export function ConversationLandscape({
     .map((speaker) => sectionsById.get(speaker.id))
     .filter((section): section is NonNullable<typeof section> => section !== undefined);
   const activeSection = activeSpeakerId ? sectionsById.get(activeSpeakerId) : undefined;
+  const excerptLabel = activeExcerptLabel.current;
 
   return (
     <section className="conversation-landscape" aria-label="Conversation landscape">
-      <div className="conversation-landscape__meta">
-        {speakerSections.map(({ speaker, color, levelCount }) => {
-          const isActive = activeSpeakerId === speaker.id;
-          return (
-            <div
-              key={speaker.id}
-              className={`conversation-landscape__chip${isActive ? " conversation-landscape__chip--active" : ""}`}
-              style={{
-                borderColor: `${color}3d`,
-                backgroundColor: `${color}10`,
-                color,
-                opacity: speaker.opacity,
-              }}
-            >
-              <span className="conversation-landscape__chip-label">{speaker.label}</span>
-              <span className="conversation-landscape__chip-copy">
-                {formatDuration(speaker.totalDurationMs)} spoken · polite {speaker.averagePoliteness.toFixed(1)} · contour lines{" "}
-                {levelCount}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
+      {activeTranscriptText ? (
+        <div
+          className={`conversation-landscape__transcript${
+            activeSection?.speaker.side === "right" ? " conversation-landscape__transcript--right" : ""
+          }`}
+          style={{ color: activeSection?.color ?? "var(--ink)" }}
+          aria-live="polite"
+        >
+          {activeSection ? (
+            <p className="conversation-landscape__transcript-label">{activeSection.speaker.label}</p>
+          ) : null}
+          <p className="conversation-landscape__transcript-copy">{activeTranscriptText}</p>
+        </div>
+      ) : null}
       <svg
         className="conversation-landscape__svg"
         viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
@@ -910,21 +973,23 @@ export function ConversationLandscape({
             ))}
           </g>
         ))}
+        {excerptLabel ? (
+          <g className="conversation-landscape__excerpt" aria-hidden="true">
+            <text
+              x={excerptLabel.x}
+              y={excerptLabel.y}
+              textAnchor={excerptLabel.align}
+              fill={excerptLabel.color}
+            >
+              {excerptLabel.lines.map((line: string, index: number) => (
+                <tspan key={`${line}-${index}`} x={excerptLabel.x} dy={index === 0 ? 0 : 18}>
+                  {line}
+                </tspan>
+              ))}
+            </text>
+          </g>
+        ) : null}
       </svg>
-      {activeTranscriptText ? (
-        <div
-          className={`conversation-landscape__transcript${
-            activeSection?.speaker.side === "right" ? " conversation-landscape__transcript--right" : ""
-          }`}
-          style={{ color: activeSection?.color ?? "var(--ink)" }}
-          aria-live="polite"
-        >
-          {activeSection ? (
-            <p className="conversation-landscape__transcript-label">{activeSection.speaker.label}</p>
-          ) : null}
-          <p className="conversation-landscape__transcript-copy">{activeTranscriptText}</p>
-        </div>
-      ) : null}
     </section>
   );
 }

@@ -22,14 +22,12 @@ This frontend reads transcript analysis from the existing FastAPI backend and pr
 ## Run
 
 ```bash
-cd frontend
-npm install
-cp .env.example .env
+../scripts/setup_local.sh
 npm run dev
 ```
 
 Start the backend separately with:
 
 ```bash
-uvicorn asr_viz.api.main:app --reload
+../scripts/run_api.sh
 ```

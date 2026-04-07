@@ -1,6 +1,6 @@
 alembic>=1.16.0
 fastapi>=0.128.0
-openai>=2.8.0
+nltk>=3.9.0
 pydantic>=2.12.0
 sqlalchemy>=2.0.0
 uvicorn>=0.37.0
@@ -8,3 +8,6 @@ uvicorn>=0.37.0
 [diarization]
 pyannote.audio>=3.3.2
 torch>=2.2.0
+
+[transcription]
+faster-whisper>=1.0.0
