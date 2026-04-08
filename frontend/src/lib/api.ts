@@ -2,6 +2,7 @@ import type {
   CreateStreamSessionRequest,
   JobSummary,
   PlaybackDocument,
+  TranscriptSegmentResponse,
   SentenceUnitResponse,
   StreamSessionResponse,
   TranscriptReviewUpdateRequest,
@@ -44,6 +45,7 @@ export async function loadPlaybackDocument(transcriptId?: string): Promise<Playb
     speaker_labels: Record<string, string>;
     review_status: PlaybackDocument["reviewStatus"];
     reviewed_at: string | null;
+    segments: TranscriptSegmentResponse[];
     sentence_units: SentenceUnitResponse[];
   }>(
     `/transcripts/${resolvedTranscriptId}`,
@@ -54,6 +56,9 @@ export async function loadPlaybackDocument(transcriptId?: string): Promise<Playb
     speakerLabels: transcript.speaker_labels ?? {},
     reviewStatus: transcript.review_status,
     reviewedAt: transcript.reviewed_at,
+    segments: [...(transcript.segments ?? [])].sort(
+      (left, right) => left.segment_index - right.segment_index || left.start_ms - right.start_ms,
+    ),
     sentenceUnits: [...transcript.sentence_units].sort(
       (left, right) => left.utterance_index - right.utterance_index || left.start_ms - right.start_ms,
     ),
@@ -133,6 +138,7 @@ export async function saveTranscriptReview(
     speaker_labels: Record<string, string>;
     review_status: PlaybackDocument["reviewStatus"];
     reviewed_at: string | null;
+    segments: TranscriptSegmentResponse[];
     sentence_units: SentenceUnitResponse[];
   };
   return {
@@ -141,6 +147,9 @@ export async function saveTranscriptReview(
     speakerLabels: transcript.speaker_labels ?? {},
     reviewStatus: transcript.review_status,
     reviewedAt: transcript.reviewed_at,
+    segments: [...(transcript.segments ?? [])].sort(
+      (left, right) => left.segment_index - right.segment_index || left.start_ms - right.start_ms,
+    ),
     sentenceUnits: [...transcript.sentence_units].sort(
       (left, right) => left.utterance_index - right.utterance_index || left.start_ms - right.start_ms,
     ),

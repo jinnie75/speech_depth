@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { ConversationLandscape } from "../components/ConversationLandscape";
+import type {
+  ConversationLandscapeMarginNote,
+  ConversationLandscapeTranscript,
+  ConversationLandscapeTranscriptToken,
+} from "../components/ConversationLandscape";
 import {
   buildJobMediaUrl,
   createStreamSession,
@@ -13,7 +18,14 @@ import {
   saveTranscriptReview,
   uploadFileToStreamSession,
 } from "../lib/api";
-import type { JobSummary, PlaybackDocument, ReviewStatus, StreamSessionResponse } from "../lib/types";
+import type {
+  JobSummary,
+  PlaybackDocument,
+  ReviewStatus,
+  SentenceUnitResponse,
+  StreamSessionResponse,
+  TranscriptSegmentResponse,
+} from "../lib/types";
 
 const TRANSCRIPT_ID = import.meta.env.VITE_TRANSCRIPT_ID;
 const DEFAULT_MEDIA_SRC = import.meta.env.VITE_MEDIA_SRC ?? "";
@@ -44,8 +56,32 @@ interface UtteranceSummary {
   endMs: number;
   durationMs: number;
   politenessScore: number;
-  hasContourSignal: boolean;
-  substanceExcerpt: string | null;
+  analysisPayload: Record<string, unknown> | null;
+  wordRanges: WordRange[];
+  wordTimings: TimedWord[];
+  contourSignals: TimedSignal[];
+}
+
+interface WordRange {
+  start: number;
+  end: number;
+}
+
+interface TimedWord {
+  startMs: number;
+  endMs: number;
+}
+
+interface TimedSignal {
+  startMs: number;
+  endMs: number;
+}
+
+interface UtterancePlaybackState {
+  progress: number;
+  visibleText: string | null;
+  visibleWordCount: number;
+  contourSignalCount: number;
 }
 
 interface ProcessedTranscriptOption {
@@ -140,30 +176,195 @@ function formatTimestamp(totalMs: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function hasAnalysisSignal(value: unknown): boolean {
+function extractAnalysisMatches(value: unknown): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
+    return [];
   }
 
-  return Object.values(value as Record<string, unknown>).some((entry) => {
-    if (Array.isArray(entry)) {
-      return entry.length > 0;
+  const matches = (value as Record<string, unknown>).matches;
+  if (!Array.isArray(matches)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      matches
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+    ),
+  );
+}
+
+function buildMatchVariants(match: string): string[] {
+  const normalized = match.toLowerCase();
+  const variants = new Set<string>([normalized, normalized.replace(/'/g, "’"), normalized.replace(/’/g, "'")]);
+
+  const contractionPairs: Array<[string, string]> = [
+    ["i am", "i'm"],
+    ["i do not", "i don't"],
+    ["do not", "don't"],
+    ["cannot", "can't"],
+  ];
+
+  contractionPairs.forEach(([expanded, contracted]) => {
+    if (normalized.includes(expanded)) {
+      variants.add(normalized.replaceAll(expanded, contracted));
+      variants.add(normalized.replaceAll(expanded, contracted.replace(/'/g, "’")));
     }
-    if (entry && typeof entry === "object") {
-      return Object.keys(entry as Record<string, unknown>).length > 0;
-    }
-    return Boolean(entry);
+  });
+
+  return Array.from(variants).filter((variant) => variant.length > 0);
+}
+
+function markMatchCoverage(coverage: boolean[], text: string, matches: string[]): void {
+  const loweredText = text.toLowerCase();
+
+  matches.forEach((match) => {
+    buildMatchVariants(match).forEach((variant) => {
+      let searchIndex = 0;
+
+      while (searchIndex < loweredText.length) {
+        const matchIndex = loweredText.indexOf(variant, searchIndex);
+        if (matchIndex === -1) {
+          break;
+        }
+
+        for (let index = matchIndex; index < matchIndex + variant.length; index += 1) {
+          coverage[index] = true;
+        }
+
+        searchIndex = matchIndex + Math.max(variant.length, 1);
+      }
+    });
   });
 }
 
-function shouldIncreaseContourLines(analysisPayload: Record<string, unknown> | null | undefined): boolean {
-  if (!analysisPayload) {
-    return false;
+function findMatchRanges(text: string, matches: string[]): WordRange[] {
+  const loweredText = text.toLowerCase();
+  const seen = new Set<string>();
+  const ranges: WordRange[] = [];
+
+  matches.forEach((match) => {
+    buildMatchVariants(match).forEach((variant) => {
+      let searchIndex = 0;
+
+      while (searchIndex < loweredText.length) {
+        const matchIndex = loweredText.indexOf(variant, searchIndex);
+        if (matchIndex === -1) {
+          break;
+        }
+
+        const rangeKey = `${matchIndex}:${matchIndex + variant.length}`;
+        if (!seen.has(rangeKey)) {
+          seen.add(rangeKey);
+          ranges.push({
+            start: matchIndex,
+            end: matchIndex + variant.length,
+          });
+        }
+
+        searchIndex = matchIndex + Math.max(variant.length, 1);
+      }
+    });
+  });
+
+  return ranges.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function rangesOverlap(left: WordRange, right: WordRange): boolean {
+  return left.start < right.end && right.start < left.end;
+}
+
+function expandRangeToClause(text: string, range: WordRange): WordRange {
+  const isClauseBoundary = (character: string): boolean => /[,:;.!?\n]/.test(character);
+  let start = clamp(range.start, 0, text.length);
+  let end = clamp(range.end, 0, text.length);
+
+  while (start > 0 && !isClauseBoundary(text[start - 1])) {
+    start -= 1;
+  }
+  while (start < text.length && /\s|["'([{]/.test(text[start])) {
+    start += 1;
   }
 
-  const hedgingPayload = analysisPayload.hedging;
-  const substancePayload = analysisPayload.substance;
-  return hasAnalysisSignal(hedgingPayload) || hasAnalysisSignal(substancePayload);
+  while (end < text.length && !isClauseBoundary(text[end])) {
+    end += 1;
+  }
+  while (end > start && /\s|[)"'\]]/.test(text[end - 1])) {
+    end -= 1;
+  }
+
+  return { start, end };
+}
+
+function buildClauseRanges(text: string, ranges: WordRange[]): WordRange[] {
+  const seen = new Set<string>();
+
+  return ranges
+    .map((range) => expandRangeToClause(text, range))
+    .filter((range) => range.end > range.start)
+    .filter((range) => {
+      const key = `${range.start}:${range.end}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
+function buildActiveTranscript(
+  utterance: UtteranceSummary | null,
+  analysisPayload: Record<string, unknown> | null | undefined,
+  visibleWordCount: number,
+  currentTimeMs: number,
+): ConversationLandscapeTranscript | null {
+  if (!utterance || !utterance.text || visibleWordCount <= 0) {
+    return null;
+  }
+
+  const transcriptText = utterance.text;
+  const hedgingMatches = extractAnalysisMatches(analysisPayload?.hedging);
+  const substanceMatches = extractAnalysisMatches(analysisPayload?.substance);
+  const hedgeRanges = findMatchRanges(transcriptText, hedgingMatches);
+  const substanceRanges = findMatchRanges(transcriptText, substanceMatches);
+  const tokens: ConversationLandscapeTranscriptToken[] = [];
+  const visibleRanges = utterance.wordRanges.slice(0, visibleWordCount);
+  let cursor = 0;
+
+  visibleRanges.forEach((wordRange, index) => {
+    if (cursor < wordRange.start) {
+      tokens.push({
+        id: `${utterance.id}-gap-${cursor}`,
+        kind: "text",
+        text: transcriptText.slice(cursor, wordRange.start),
+      });
+    }
+
+    const wordTiming = utterance.wordTimings[index];
+    const wordDurationMs = Math.max((wordTiming?.endMs ?? utterance.endMs) - (wordTiming?.startMs ?? utterance.startMs), 1);
+
+    tokens.push({
+      id: `${utterance.id}-word-${index}-${wordRange.start}-${wordRange.end}`,
+      kind: "word",
+      text: transcriptText.slice(wordRange.start, wordRange.end),
+      start: wordRange.start,
+      end: wordRange.end,
+      isHedge: hedgeRanges.some((range) => rangesOverlap(range, wordRange)),
+      isSubstance: substanceRanges.some((range) => rangesOverlap(range, wordRange)),
+      dropStartMs: (wordTiming?.startMs ?? utterance.startMs) + Math.min(wordDurationMs * 0.16, 90),
+      dropDurationMs: 1600 + Math.min(wordDurationMs * 2.5, 420),
+    });
+
+    cursor = wordRange.end;
+  });
+
+  return {
+    utteranceId: utterance.id,
+    currentTimeMs,
+    tokens: tokens.filter((token) => token.text.length > 0),
+  };
 }
 
 function stringifyAnalysisPayload(analysisPayload: Record<string, unknown> | null | undefined): string {
@@ -173,30 +374,258 @@ function stringifyAnalysisPayload(analysisPayload: Record<string, unknown> | nul
   return JSON.stringify(analysisPayload, null, 2);
 }
 
-function extractSubstanceExcerpt(analysisPayload: Record<string, unknown> | null | undefined): string | null {
-  const excerpt = analysisPayload?.substance;
-  if (!excerpt || typeof excerpt !== "object" || Array.isArray(excerpt)) {
-    return null;
+function extractWordRanges(text: string): WordRange[] {
+  return Array.from(text.matchAll(/\S+/g), (match) => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+}
+
+function buildFallbackWordTimings(wordCount: number, startMs: number, endMs: number): TimedWord[] {
+  if (wordCount <= 0) {
+    return [];
   }
 
-  const value = (excerpt as Record<string, unknown>).excerpt;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  const durationMs = Math.max(endMs - startMs, wordCount);
+  return Array.from({ length: wordCount }, (_, index) => {
+    const nextIndex = index + 1;
+    const wordStartMs = startMs + Math.floor((durationMs * index) / wordCount);
+    const wordEndMs = startMs + Math.ceil((durationMs * nextIndex) / wordCount);
+    return {
+      startMs: wordStartMs,
+      endMs: Math.max(wordStartMs + 1, wordEndMs),
+    };
+  });
+}
+
+function resolveSentenceSegmentWords(
+  sentence: SentenceUnitResponse,
+  segments: TranscriptSegmentResponse[],
+): TimedWord[] {
+  const relevantSegmentIndices = new Set(sentence.source_segment_ids);
+  const candidateWords = segments
+    .filter((segment) => relevantSegmentIndices.has(segment.segment_index))
+    .flatMap((segment) => segment.words_json ?? [])
+    .filter((word) => {
+      const midpoint = word.start_ms + (word.end_ms - word.start_ms) / 2;
+      return sentence.start_ms <= midpoint && midpoint < sentence.end_ms;
+    })
+    .sort((left, right) => left.start_ms - right.start_ms || left.end_ms - right.end_ms);
+
+  return candidateWords.map((word) => ({
+    startMs: Math.max(sentence.start_ms, word.start_ms),
+    endMs: Math.min(sentence.end_ms, Math.max(word.end_ms, word.start_ms + 1)),
+  }));
+}
+
+function buildSentenceWordTimings(
+  sentence: SentenceUnitResponse,
+  segments: TranscriptSegmentResponse[],
+  wordRanges: WordRange[],
+): TimedWord[] {
+  if (wordRanges.length === 0) {
+    return [];
+  }
+
+  const segmentWords = resolveSentenceSegmentWords(sentence, segments);
+  if (segmentWords.length === wordRanges.length) {
+    return segmentWords;
+  }
+
+  return buildFallbackWordTimings(wordRanges.length, sentence.start_ms, sentence.end_ms);
+}
+
+function fallbackSignalTiming(
+  signalRange: WordRange,
+  utteranceTextLength: number,
+  utteranceStartMs: number,
+  utteranceEndMs: number,
+): TimedSignal {
+  const durationMs = Math.max(utteranceEndMs - utteranceStartMs, 1);
+  const startRatio = utteranceTextLength <= 0 ? 0 : signalRange.start / utteranceTextLength;
+  const endRatio = utteranceTextLength <= 0 ? 1 : signalRange.end / utteranceTextLength;
+  const startMs = utteranceStartMs + Math.floor(durationMs * startRatio);
+  const endMs = utteranceStartMs + Math.ceil(durationMs * endRatio);
+
+  return {
+    startMs,
+    endMs: Math.max(startMs + 1, endMs),
+  };
+}
+
+function resolveRangeTiming(
+  range: WordRange,
+  utteranceTextLength: number,
+  wordRanges: WordRange[],
+  wordTimings: TimedWord[],
+  utteranceStartMs: number,
+  utteranceEndMs: number,
+): TimedSignal {
+  const overlappingWordIndexes = wordRanges
+    .map((wordRange, index) => ({ wordRange, index }))
+    .filter(({ wordRange }) => range.start < wordRange.end && wordRange.start < range.end)
+    .map(({ index }) => index);
+
+  if (overlappingWordIndexes.length === 0) {
+    return fallbackSignalTiming(range, utteranceTextLength, utteranceStartMs, utteranceEndMs);
+  }
+
+  const firstWordTiming = wordTimings[overlappingWordIndexes[0]];
+  const lastWordTiming = wordTimings[overlappingWordIndexes[overlappingWordIndexes.length - 1]];
+
+  if (!firstWordTiming || !lastWordTiming) {
+    return fallbackSignalTiming(range, utteranceTextLength, utteranceStartMs, utteranceEndMs);
+  }
+
+  return {
+    startMs: firstWordTiming.startMs,
+    endMs: Math.max(firstWordTiming.startMs + 1, lastWordTiming.endMs),
+  };
+}
+
+function buildContourSignals(
+  text: string,
+  analysisPayload: Record<string, unknown> | null | undefined,
+  wordRanges: WordRange[],
+  wordTimings: TimedWord[],
+  utteranceStartMs: number,
+  utteranceEndMs: number,
+): TimedSignal[] {
+  const hedgingMatches = extractAnalysisMatches(analysisPayload?.hedging);
+  const matchRanges = findMatchRanges(text, hedgingMatches);
+
+  return matchRanges.map((matchRange) =>
+    resolveRangeTiming(matchRange, text.length, wordRanges, wordTimings, utteranceStartMs, utteranceEndMs),
+  );
+}
+
+function buildMarginNotes(utterances: UtteranceSummary[]): ConversationLandscapeMarginNote[] {
+  return utterances.flatMap((utterance) => {
+    const substanceMatches = extractAnalysisMatches(utterance.analysisPayload?.substance);
+    const clauseRanges = buildClauseRanges(utterance.text, findMatchRanges(utterance.text, substanceMatches));
+
+    return clauseRanges
+      .map((range, index) => {
+        const timing = resolveRangeTiming(
+          range,
+          utterance.text.length,
+          utterance.wordRanges,
+          utterance.wordTimings,
+          utterance.startMs,
+          utterance.endMs,
+        );
+
+        return {
+          id: `${utterance.id}-substance-clause-${index}-${range.start}-${range.end}`,
+          text: utterance.text.slice(range.start, range.end).trim(),
+          utteranceId: utterance.id,
+          appearAtMs: timing.endMs + 120,
+          sourceStart: range.start,
+          sourceEnd: range.end,
+          settleDurationMs: 3000,
+        };
+      })
+      .filter((note) => note.text.length > 0);
+  });
 }
 
 function buildUtterances(document: PlaybackDocument): UtteranceSummary[] {
   return [...document.sentenceUnits]
-    .map((sentence) => ({
-      id: sentence.id,
-      speakerId: sentence.display_speaker_id || FALLBACK_SPEAKER_ID,
-      text: sentence.display_text,
-      startMs: sentence.start_ms,
-      endMs: sentence.end_ms,
-      durationMs: Math.max(1, sentence.end_ms - sentence.start_ms),
-      politenessScore: sentence.analysis_result?.politeness_score ?? 0.5,
-      hasContourSignal: shouldIncreaseContourLines(sentence.analysis_result?.analysis_payload),
-      substanceExcerpt: extractSubstanceExcerpt(sentence.analysis_result?.analysis_payload),
-    }))
+    .map((sentence) => {
+      const wordRanges = extractWordRanges(sentence.display_text);
+      const wordTimings = buildSentenceWordTimings(sentence, document.segments, wordRanges);
+
+      return {
+        id: sentence.id,
+        speakerId: sentence.display_speaker_id || FALLBACK_SPEAKER_ID,
+        text: sentence.display_text,
+        startMs: sentence.start_ms,
+        endMs: sentence.end_ms,
+        durationMs: Math.max(1, sentence.end_ms - sentence.start_ms),
+        politenessScore: sentence.analysis_result?.politeness_score ?? 0.5,
+        analysisPayload: sentence.analysis_result?.analysis_payload ?? null,
+        wordRanges,
+        wordTimings,
+        contourSignals: buildContourSignals(
+          sentence.display_text,
+          sentence.analysis_result?.analysis_payload,
+          wordRanges,
+          wordTimings,
+          sentence.start_ms,
+          sentence.end_ms,
+        ),
+      };
+    })
     .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+}
+
+function getUtterancePlaybackState(utterance: UtteranceSummary, currentTimeMs: number): UtterancePlaybackState {
+  if (utterance.wordRanges.length === 0 || utterance.wordTimings.length === 0) {
+    const progress = clamp((currentTimeMs - utterance.startMs) / utterance.durationMs, 0, 1);
+    const contourSignalCount = utterance.contourSignals.reduce((total, signal) => {
+      if (currentTimeMs <= signal.startMs) {
+        return total;
+      }
+      if (currentTimeMs >= signal.endMs) {
+        return total + 1;
+      }
+      const signalDurationMs = Math.max(signal.endMs - signal.startMs, 1);
+      return total + clamp((currentTimeMs - signal.startMs) / signalDurationMs, 0, 1);
+    }, 0);
+    return {
+      progress,
+      visibleText: progress > 0 ? utterance.text : null,
+      visibleWordCount: progress > 0 ? utterance.wordRanges.length : 0,
+      contourSignalCount,
+    };
+  }
+
+  if (currentTimeMs < utterance.wordTimings[0].startMs) {
+    return { progress: 0, visibleText: null, visibleWordCount: 0, contourSignalCount: 0 };
+  }
+
+  const totalWords = utterance.wordTimings.length;
+  let completedWords = 0;
+  let progress = 1;
+
+  for (let index = 0; index < totalWords; index += 1) {
+    const wordTiming = utterance.wordTimings[index];
+
+    if (currentTimeMs < wordTiming.startMs) {
+      progress = completedWords / totalWords;
+      break;
+    }
+
+    if (currentTimeMs < wordTiming.endMs) {
+      const wordDurationMs = Math.max(wordTiming.endMs - wordTiming.startMs, 1);
+      const partialProgress = clamp((currentTimeMs - wordTiming.startMs) / wordDurationMs, 0, 1);
+      progress = (index + partialProgress) / totalWords;
+      completedWords = index + 1;
+      break;
+    }
+
+    completedWords = index + 1;
+  }
+
+  const visibleText =
+    completedWords > 0 ? utterance.text.slice(0, utterance.wordRanges[completedWords - 1].end).trimEnd() : null;
+  const contourSignalCount = utterance.contourSignals.reduce((total, signal) => {
+    if (currentTimeMs <= signal.startMs) {
+      return total;
+    }
+    if (currentTimeMs >= signal.endMs) {
+      return total + 1;
+    }
+    const signalDurationMs = Math.max(signal.endMs - signal.startMs, 1);
+    return total + clamp((currentTimeMs - signal.startMs) / signalDurationMs, 0, 1);
+  }, 0);
+
+  return {
+    progress: clamp(progress, 0, 1),
+    visibleText,
+    visibleWordCount: completedWords,
+    contourSignalCount,
+  };
 }
 
 function buildSpeakerSummaries(
@@ -252,22 +681,6 @@ function findActiveUtterance(utterances: UtteranceSummary[], currentTimeMs: numb
   }
 
   return latestStarted;
-}
-
-function findPreviousUtterance(
-  utterances: UtteranceSummary[],
-  activeUtterance: UtteranceSummary | null,
-): UtteranceSummary | null {
-  if (!activeUtterance) {
-    return null;
-  }
-
-  const activeIndex = utterances.findIndex((utterance) => utterance.id === activeUtterance.id);
-  if (activeIndex <= 0) {
-    return null;
-  }
-
-  return utterances[activeIndex - 1] ?? null;
 }
 
 function fileToObjectUrl(file: File): string {
@@ -328,6 +741,44 @@ function describeStreamStatus(streamSession: StreamSessionResponse | null, uploa
     return streamSession.error_message || "Processing failed.";
   }
   return streamSession.status;
+}
+
+function describeProcessingProgress(streamSession: StreamSessionResponse | null, uploadProgress: number | null): string | null {
+  if (!streamSession) {
+    return null;
+  }
+
+  if (streamSession.status === "open") {
+    const uploadWeight = uploadProgress === null ? 10 : Math.max(5, Math.min(20, Math.round(uploadProgress * 20)));
+    return `${uploadWeight}% complete · Uploading file`;
+  }
+
+  if (streamSession.status === "queued") {
+    return "25% complete · Waiting for worker";
+  }
+
+  if (streamSession.status === "processing") {
+    if (streamSession.processing_stage === "transcription") {
+      return "50% complete · Transcription";
+    }
+    if (streamSession.processing_stage === "diarization") {
+      return "75% complete · Speaker diarization";
+    }
+    if (streamSession.processing_stage === "analysis") {
+      return "90% complete · Analysis";
+    }
+    return "60% complete · Processing";
+  }
+
+  if (streamSession.status === "completed") {
+    return "100% complete · Transcript ready";
+  }
+
+  if (streamSession.status === "failed") {
+    return streamSession.error_message || "Processing failed.";
+  }
+
+  return null;
 }
 
 function detectSpeakerIds(document: PlaybackDocument | null): string[] {
@@ -644,7 +1095,6 @@ export function App() {
   const speakerLabels = reviewDraft?.speakerLabels ?? document?.speakerLabels ?? {};
   const speakers = buildSpeakerSummaries(utterances, speakerLabels);
   const activeUtterance = playbackStarted || currentTimeMs > 0 ? findActiveUtterance(utterances, currentTimeMs) : null;
-  const excerptUtterance = findPreviousUtterance(utterances, activeUtterance);
   const activeSentence =
     document?.sentenceUnits.find((sentence) => sentence.id === activeUtterance?.id) ?? null;
   const isReviewDirty = isReviewDraftDirty(document, reviewDraft);
@@ -658,15 +1108,26 @@ export function App() {
     totalDurationMs: speaker.totalDurationMs,
     averagePoliteness: speaker.averagePoliteness,
   }));
-  const landscapeUtterances = utterances.map((utterance, index) => ({
-    id: utterance.id,
-    speakerId: utterance.speakerId,
-    politenessScore: utterance.politenessScore,
-    hasContourSignal: utterance.hasContourSignal,
-    substanceExcerpt: utterance.substanceExcerpt,
-    progress: clamp((currentTimeMs - utterance.startMs) / utterance.durationMs, 0, 1),
-    order: index,
-  }));
+  const activeUtterancePlaybackState = activeUtterance ? getUtterancePlaybackState(activeUtterance, currentTimeMs) : null;
+  const landscapeUtterances = utterances.map((utterance, index) => {
+    const playbackState = getUtterancePlaybackState(utterance, currentTimeMs);
+
+    return {
+      id: utterance.id,
+      speakerId: utterance.speakerId,
+      politenessScore: utterance.politenessScore,
+      contourSignalCount: playbackState.contourSignalCount,
+      progress: playbackState.progress,
+      order: index,
+    };
+  });
+  const marginNotes = buildMarginNotes(utterances);
+  const activeTranscript = buildActiveTranscript(
+    activeUtterance,
+    activeSentence?.analysis_result?.analysis_payload,
+    activeUtterancePlaybackState?.visibleWordCount ?? 0,
+    currentTimeMs,
+  );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -791,20 +1252,6 @@ export function App() {
     setSaveState("idle");
   };
 
-  const resetDraftSentence = (sentenceId: string) => {
-    if (!document) {
-      return;
-    }
-    const sourceSentence = document.sentenceUnits.find((sentence) => sentence.id === sentenceId);
-    if (!sourceSentence) {
-      return;
-    }
-    updateDraftSentence(sentenceId, {
-      text: sourceSentence.text,
-      speakerId: sourceSentence.speaker_id,
-    });
-  };
-
   const handleSaveReview = async (nextStatus: ReviewStatus) => {
     if (!document || !reviewDraft) {
       return;
@@ -923,7 +1370,7 @@ export function App() {
     setIsMediaMuted(mediaElementRef.current.muted);
   };
 
-  const renderCompactMediaControls = () => {
+  const renderCompactMediaControls = ({ minimal = false }: { minimal?: boolean } = {}) => {
     if (!mediaSrc) {
       return (
         <div className="empty-state">
@@ -946,7 +1393,7 @@ export function App() {
           onSeeked={handleMediaTimeUpdate}
           onVolumeChange={handleMediaVolumeChange}
         />
-        <div className="review-media-controls">
+        <div className={`review-media-controls${minimal ? " review-media-controls--minimal" : ""}`}>
           <button
             type="button"
             className="ghost-button review-media-controls__button review-media-controls__icon-button"
@@ -1011,11 +1458,9 @@ export function App() {
               {isTranscriptProcessing ? (
                 <div className="upload-processing" aria-live="polite">
                   <h3>Processing...</h3>
-                  <div className="upload-processing__bar" aria-hidden="true">
-                    <span className="upload-processing__bar-fill" />
-                  </div>
+                  <div className="upload-processing__bar" aria-hidden="true" />
                   <p className="upload-processing__copy">
-                    {describeStreamStatus(streamSession, uploadProgress) ?? "Your transcript is processing."}
+                    {describeProcessingProgress(streamSession, uploadProgress) ?? "Your transcript is processing."}
                   </p>
                 </div>
               ) : !pendingFile ? (
@@ -1067,12 +1512,10 @@ export function App() {
                 </div>
               )}
 
-              {pendingFile || streamSession ? (
+              {(pendingFile || streamSession) && !isTranscriptProcessing ? (
                 <div className="status-strip onboarding-choice__status">
-                  {pendingFile && !isTranscriptProcessing ? (
-                    <span>{speakerCount} speaker{speakerCount === 1 ? "" : "s"} selected</span>
-                  ) : null}
-                  {pendingFile && !isTranscriptProcessing ? <span>Ready to upload</span> : null}
+                  {pendingFile ? <span>{speakerCount} speaker{speakerCount === 1 ? "" : "s"} selected</span> : null}
+                  {pendingFile ? <span>Ready to upload</span> : null}
                   {describeStreamStatus(streamSession, uploadProgress) ? (
                     <span>{describeStreamStatus(streamSession, uploadProgress)}</span>
                   ) : null}
@@ -1140,6 +1583,14 @@ export function App() {
                 <button type="button" className="ghost-button" onClick={() => setMode("select")}>
                   Back to Files
                 </button>
+                <button
+                  type="button"
+                  className="submit-upload"
+                  onClick={() => void handleSaveReview("completed")}
+                  disabled={saveState === "saving"}
+                >
+                  Save and Continue
+                </button>
               </div>
             </section>
 
@@ -1193,7 +1644,6 @@ export function App() {
                 <span>Timestamp</span>
                 <span>Speaker</span>
                 <span>Text</span>
-                <span className="transcript-grid__actions-label">Actions</span>
               </div>
 
               <div className="transcript-editor-list">
@@ -1240,11 +1690,6 @@ export function App() {
                             />
                           </label>
                         ) : null}
-                        <div className="transcript-row__actions">
-                          <button type="button" className="ghost-button" onClick={() => resetDraftSentence(sentence.id)}>
-                            Reset
-                          </button>
-                        </div>
                       </div>
                     </div>
                   );
@@ -1300,28 +1745,21 @@ export function App() {
       {mode === "playback" && document ? (
         <>
           <section className="playback-header">
-            <div>
+            <div className="playback-header__summary">
               <p className="eyebrow">Visualization</p>
-              <h1>{document.conversationTitle || mediaName}</h1>
-              <p className="lede">Review is complete. You can still reopen the transcript editor at any time.</p>
+              <div className="playback-header__title-row">
+                <h1>{document.conversationTitle || mediaName}</h1>
+                <div className="playback-header__actions">
+                  <button type="button" className="ghost-button" onClick={() => setMode("select")}>
+                    Back to Files
+                  </button>
+                  <button type="button" className="submit-upload" onClick={() => setMode("review")}>
+                    Edit Transcript
+                  </button>
+                </div>
+              </div>
+              <div className="playback-header__transport">{renderCompactMediaControls({ minimal: true })}</div>
             </div>
-            <div className="playback-header__actions">
-              <button type="button" className="ghost-button" onClick={() => setMode("select")}>
-                Back to Files
-              </button>
-              <button type="button" className="submit-upload" onClick={() => setMode("review")}>
-                Edit Transcript
-              </button>
-            </div>
-          </section>
-
-          <section className="playback-media surface-card">
-            <div className="status-strip">
-              <span>{mediaName}</span>
-              <span>{document.transcriptId}</span>
-              <span>{speakers.length} speaker{speakers.length === 1 ? "" : "s"}</span>
-            </div>
-            {renderCompactMediaControls()}
           </section>
 
           <section className="terrain-grid">
@@ -1334,32 +1772,11 @@ export function App() {
               <ConversationLandscape
                 speakers={landscapeSpeakers}
                 utterances={landscapeUtterances}
-                activeUtteranceId={excerptUtterance?.id ?? null}
                 activeSpeakerId={activeUtterance?.speakerId ?? null}
-                activeTranscriptText={activeUtterance?.text ?? null}
+                activeTranscript={activeTranscript}
+                marginNotes={marginNotes}
+                currentTimeMs={currentTimeMs}
               />
-            )}
-          </section>
-
-          <section className="current-payload surface-card">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Current Payload</p>
-                <h2>Active sentence analysis</h2>
-              </div>
-              <p className="surface-note">This updates with playback and shows the current sentence&apos;s `analysis_payload`.</p>
-            </div>
-            {activeSentence ? (
-              <div className="current-payload__body">
-                <p className="current-payload__text">{activeSentence.display_text}</p>
-                <pre className="current-payload__code">
-                  {stringifyAnalysisPayload(activeSentence.analysis_result?.analysis_payload)}
-                </pre>
-              </div>
-            ) : (
-              <div className="empty-state">
-                <p>Start playback to inspect the active sentence payload.</p>
-              </div>
             )}
           </section>
         </>

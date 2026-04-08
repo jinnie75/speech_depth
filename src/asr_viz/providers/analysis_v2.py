@@ -456,7 +456,7 @@ def _heuristic_substance(text: str, normalized_text: str) -> dict:
         excerpt_fragments.extend(life_treatment_clauses[:1])
         rationale_parts.append("Comments on life or how people treat the speaker")
 
-    excerpt = "; ".join(_dedupe_preserve_order(excerpt_fragments)[:2])
+    excerpt = ", ".join(_dedupe_preserve_order(excerpt_fragments)[:2])
     rationale = ". ".join(rationale_parts)
 
     return {

@@ -21,6 +21,25 @@ export interface AnalysisResultResponse {
   analysis_payload: Record<string, unknown>;
 }
 
+export interface TranscriptWordResponse {
+  word: string;
+  start_ms: number;
+  end_ms: number;
+  probability: number | null;
+}
+
+export interface TranscriptSegmentResponse {
+  id: string;
+  segment_index: number;
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  avg_logprob: number | null;
+  no_speech_prob: number | null;
+  words_json: TranscriptWordResponse[];
+  raw_payload: Record<string, unknown>;
+}
+
 export interface SentenceUnitResponse {
   id: string;
   utterance_index: number;
@@ -71,6 +90,7 @@ export interface PlaybackDocument {
   speakerLabels: Record<string, string>;
   reviewStatus: ReviewStatus;
   reviewedAt: string | null;
+  segments: TranscriptSegmentResponse[];
   sentenceUnits: SentenceUnitResponse[];
 }
 

@@ -1,3 +1,5 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
 interface ConversationLandscapeSpeaker {
   id: string;
   label: string;
@@ -11,18 +13,56 @@ interface ConversationLandscapeUtterance {
   id: string;
   speakerId: string;
   politenessScore: number;
-  hasContourSignal: boolean;
-  substanceExcerpt: string | null;
+  contourSignalCount: number;
   progress: number;
   order: number;
+}
+
+export interface ConversationLandscapeTranscriptTextToken {
+  id: string;
+  kind: "text";
+  text: string;
+}
+
+export interface ConversationLandscapeTranscriptWordToken {
+  id: string;
+  kind: "word";
+  text: string;
+  start: number;
+  end: number;
+  isHedge: boolean;
+  isSubstance: boolean;
+  dropStartMs: number;
+  dropDurationMs: number;
+}
+
+export interface ConversationLandscapeMarginNote {
+  id: string;
+  text: string;
+  utteranceId: string;
+  appearAtMs: number;
+  sourceStart: number;
+  sourceEnd: number;
+  settleDurationMs: number;
+}
+
+export type ConversationLandscapeTranscriptToken =
+  | ConversationLandscapeTranscriptTextToken
+  | ConversationLandscapeTranscriptWordToken;
+
+export interface ConversationLandscapeTranscript {
+  utteranceId: string;
+  currentTimeMs: number;
+  tokens: ConversationLandscapeTranscriptToken[];
 }
 
 interface ConversationLandscapeProps {
   speakers: ConversationLandscapeSpeaker[];
   utterances: ConversationLandscapeUtterance[];
-  activeUtteranceId: string | null;
   activeSpeakerId: string | null;
-  activeTranscriptText: string | null;
+  activeTranscript: ConversationLandscapeTranscript | null;
+  marginNotes: ConversationLandscapeMarginNote[];
+  currentTimeMs: number;
 }
 
 interface Point {
@@ -50,24 +90,48 @@ interface SpeakerSection {
   paths: { level: number; d: string }[];
 }
 
-interface ActiveExcerptLabel {
-  x: number;
-  y: number;
-  lines: string[];
-  color: string;
-  align: "start" | "end";
+interface WordPosition {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface LaunchPosition {
+  left: number;
+  top: number;
+}
+
+interface MarginNoteSlot {
+  leftPercent: number;
+  topPercent: number;
+  widthCh: number;
 }
 
 const VIEWBOX_WIDTH = 1200;
 const VIEWBOX_HEIGHT = 620;
-const GRID_COLS = 156;
-const GRID_ROWS = 112;
-const MAP_PADDING_X = 34;
-const MAP_PADDING_Y = 28;
+const MAP_PADDING_X = 0;
+const MAP_PADDING_Y = 0;
 const MAP_WIDTH = VIEWBOX_WIDTH - MAP_PADDING_X * 2;
 const MAP_HEIGHT = VIEWBOX_HEIGHT - MAP_PADDING_Y * 2;
-const SPEAKER_COLORS = ["#0a8f87", "#8a4c1b", "#4b6c84", "#73586d"];
-const SPEAKER_OUTER_COLORS = ["#a7dbd6", "#d8b59b", "#9fb8ca", "#c6b2c0"];
+const GRID_ROWS = 112;
+const GRID_COLS = Math.max(156, Math.round((MAP_WIDTH / MAP_HEIGHT) * GRID_ROWS));
+const SPEAKER_COLORS = ["#0a8f87", "#8a4c1b", "#d26f1b", "#73586d"];
+const SPEAKER_OUTER_COLORS = ["#a7dbd6", "#d8b59b", "#f1c59f", "#c6b2c0"];
+const MARGIN_NOTE_SLOTS: MarginNoteSlot[] = [
+  { leftPercent: 8, topPercent: 61, widthCh: 18 },
+  { leftPercent: 28, topPercent: 64, widthCh: 16 },
+  { leftPercent: 49, topPercent: 60, widthCh: 20 },
+  { leftPercent: 71, topPercent: 66, widthCh: 15 },
+  { leftPercent: 15, topPercent: 73, widthCh: 17 },
+  { leftPercent: 37, topPercent: 76, widthCh: 18 },
+  { leftPercent: 59, topPercent: 72, widthCh: 16 },
+  { leftPercent: 79, topPercent: 78, widthCh: 15 },
+  { leftPercent: 7, topPercent: 84, widthCh: 16 },
+  { leftPercent: 30, topPercent: 89, widthCh: 17 },
+  { leftPercent: 55, topPercent: 86, widthCh: 18 },
+  { leftPercent: 74, topPercent: 91, widthCh: 16 },
+];
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -99,9 +163,9 @@ function hexToRgb(color: string): { r: number; g: number; b: number } {
   const expanded =
     normalized.length === 3
       ? normalized
-          .split("")
-          .map((character) => `${character}${character}`)
-          .join("")
+        .split("")
+        .map((character) => `${character}${character}`)
+        .join("")
       : normalized;
 
   return {
@@ -178,6 +242,122 @@ function buildFieldWashDataUrl(
   return canvas.toDataURL("image/png");
 }
 
+function measureTranscriptWordPositions(
+  canvas: HTMLDivElement | null,
+  wordNodes: Map<string, HTMLSpanElement>,
+): Record<string, WordPosition> {
+  if (!canvas) {
+    return {};
+  }
+
+  const canvasRect = canvas.getBoundingClientRect();
+  const positions: Record<string, WordPosition> = {};
+
+  wordNodes.forEach((node, id) => {
+    const wordRect = node.getBoundingClientRect();
+    positions[id] = {
+      left: wordRect.left - canvasRect.left,
+      top: wordRect.top - canvasRect.top,
+      width: wordRect.width,
+      height: wordRect.height,
+    };
+  });
+
+  return positions;
+}
+
+function areWordPositionsEqual(
+  left: Record<string, WordPosition>,
+  right: Record<string, WordPosition>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  return leftKeys.every((key) => {
+    const leftPosition = left[key];
+    const rightPosition = right[key];
+
+    return (
+      rightPosition !== undefined &&
+      leftPosition.left === rightPosition.left &&
+      leftPosition.top === rightPosition.top &&
+      leftPosition.width === rightPosition.width &&
+      leftPosition.height === rightPosition.height
+    );
+  });
+}
+
+function areLaunchPositionsEqual(
+  left: Record<string, LaunchPosition>,
+  right: Record<string, LaunchPosition>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  return leftKeys.every((key) => {
+    const leftPosition = left[key];
+    const rightPosition = right[key];
+
+    return rightPosition !== undefined && leftPosition.left === rightPosition.left && leftPosition.top === rightPosition.top;
+  });
+}
+
+function buildVisibleMarginNotes(
+  marginNotes: ConversationLandscapeMarginNote[],
+  currentTimeMs: number,
+): Array<{
+  note: ConversationLandscapeMarginNote;
+  leftPercent: number;
+  topPercent: number;
+  widthCh: number;
+  revealProgress: number;
+}> {
+  const revealedNotes = [...marginNotes]
+    .filter((note) => currentTimeMs >= note.appearAtMs)
+    .sort((left, right) => left.appearAtMs - right.appearAtMs || left.id.localeCompare(right.id));
+  const occupiedSlots = new Map<number, (typeof revealedNotes)[number]>();
+  const slotQueue: number[] = [];
+
+  revealedNotes.forEach((note) => {
+    const preferredSlots = MARGIN_NOTE_SLOTS.map((_, slotIndex) => ({
+      slotIndex,
+      score: hashUnit(`${note.id}-slot-${slotIndex}`),
+    })).sort((left, right) => left.score - right.score);
+
+    const freeSlot = preferredSlots.find(({ slotIndex }) => !occupiedSlots.has(slotIndex));
+    const chosenSlotIndex =
+      freeSlot?.slotIndex ??
+      (() => {
+        const recycledSlotIndex = slotQueue.shift();
+        return recycledSlotIndex ?? 0;
+      })();
+
+    occupiedSlots.set(chosenSlotIndex, note);
+    slotQueue.push(chosenSlotIndex);
+  });
+
+  return slotQueue.map((slotIndex) => {
+    const note = occupiedSlots.get(slotIndex);
+    const slot = MARGIN_NOTE_SLOTS[slotIndex];
+
+    return {
+      note: note as ConversationLandscapeMarginNote,
+      leftPercent: slot.leftPercent,
+      topPercent: slot.topPercent,
+      widthCh: slot.widthCh,
+      revealProgress: clamp((currentTimeMs - (note?.appearAtMs ?? currentTimeMs)) / 420, 0, 1),
+    };
+  });
+}
+
 function getContourStroke(pathIndex: number, pathCount: number, outerColor: string, innerColor: string): string {
   if (pathCount <= 1) {
     return innerColor;
@@ -185,58 +365,6 @@ function getContourStroke(pathIndex: number, pathCount: number, outerColor: stri
 
   const innerness = pathIndex / (pathCount - 1);
   return mixColors(outerColor, innerColor, innerness);
-}
-
-function formatDuration(totalDurationMs: number): string {
-  const seconds = totalDurationMs / 1000;
-  if (seconds >= 10) {
-    return `${seconds.toFixed(1)}s`;
-  }
-  return `${seconds.toFixed(2)}s`;
-}
-
-function wrapExcerpt(text: string, maxCharsPerLine: number = 28, maxLines: number = 3): string[] {
-  const words = text.trim().split(/\s+/);
-  const lines: string[] = [];
-  let current = "";
-
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (candidate.length <= maxCharsPerLine) {
-      current = candidate;
-      continue;
-    }
-
-    if (current) {
-      lines.push(current);
-      current = word;
-    } else {
-      lines.push(word.slice(0, maxCharsPerLine));
-      current = word.slice(maxCharsPerLine);
-    }
-
-    if (lines.length === maxLines - 1) {
-      break;
-    }
-  }
-
-  if (lines.length < maxLines && current) {
-    lines.push(current);
-  }
-
-  if (lines.length > maxLines) {
-    return lines.slice(0, maxLines);
-  }
-
-  if (words.length > 0 && lines.length === maxLines) {
-    const consumed = lines.join(" ").trim();
-    if (consumed.length < text.trim().length) {
-      const lastLine = lines[maxLines - 1];
-      lines[maxLines - 1] = lastLine.length > maxCharsPerLine - 1 ? `${lastLine.slice(0, maxCharsPerLine - 1)}…` : `${lastLine}…`;
-    }
-  }
-
-  return lines;
 }
 
 function createGrid(): number[][] {
@@ -255,27 +383,51 @@ function gridY(index: number): number {
   return MAP_PADDING_Y + (index / (GRID_ROWS - 1)) * MAP_HEIGHT;
 }
 
-function addGaussianStamp(
+function addRidgeStamp(
   field: number[][],
   centerX: number,
   centerY: number,
-  radiusX: number,
-  radiusY: number,
+  lengthRadius: number,
+  crossRadius: number,
+  angle: number,
   amplitude: number,
 ): void {
-  const minX = clamp(Math.floor(((centerX - radiusX * 2.6 - MAP_PADDING_X) / MAP_WIDTH) * (GRID_COLS - 1)), 0, GRID_COLS - 1);
-  const maxX = clamp(Math.ceil(((centerX + radiusX * 2.6 - MAP_PADDING_X) / MAP_WIDTH) * (GRID_COLS - 1)), 0, GRID_COLS - 1);
-  const minY = clamp(Math.floor(((centerY - radiusY * 2.6 - MAP_PADDING_Y) / MAP_HEIGHT) * (GRID_ROWS - 1)), 0, GRID_ROWS - 1);
-  const maxY = clamp(Math.ceil(((centerY + radiusY * 2.6 - MAP_PADDING_Y) / MAP_HEIGHT) * (GRID_ROWS - 1)), 0, GRID_ROWS - 1);
+  const influenceRadius = Math.max(lengthRadius, crossRadius) * 2.8;
+  const minX = clamp(
+    Math.floor(((centerX - influenceRadius - MAP_PADDING_X) / MAP_WIDTH) * (GRID_COLS - 1)),
+    0,
+    GRID_COLS - 1,
+  );
+  const maxX = clamp(
+    Math.ceil(((centerX + influenceRadius - MAP_PADDING_X) / MAP_WIDTH) * (GRID_COLS - 1)),
+    0,
+    GRID_COLS - 1,
+  );
+  const minY = clamp(
+    Math.floor(((centerY - influenceRadius - MAP_PADDING_Y) / MAP_HEIGHT) * (GRID_ROWS - 1)),
+    0,
+    GRID_ROWS - 1,
+  );
+  const maxY = clamp(
+    Math.ceil(((centerY + influenceRadius - MAP_PADDING_Y) / MAP_HEIGHT) * (GRID_ROWS - 1)),
+    0,
+    GRID_ROWS - 1,
+  );
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
 
   for (let xIndex = minX; xIndex <= maxX; xIndex += 1) {
     const x = gridX(xIndex);
     for (let yIndex = minY; yIndex <= maxY; yIndex += 1) {
       const y = gridY(yIndex);
-      const dx = (x - centerX) / Math.max(radiusX, 1);
-      const dy = (y - centerY) / Math.max(radiusY, 1);
-      const distance = dx * dx + dy * dy;
-      field[xIndex][yIndex] += amplitude * Math.exp(-distance * 1.9);
+      const dx = x - centerX;
+      const dy = y - centerY;
+      const along = (dx * cos + dy * sin) / Math.max(lengthRadius, 1);
+      const across = (-dx * sin + dy * cos) / Math.max(crossRadius, 1);
+      const ridgeDistance = along * along * 0.38 + across * across * 2.8;
+      const ridgeCore = Math.exp(-ridgeDistance);
+      const terrace = 0.82 + Math.cos(along * Math.PI * 1.8) * 0.1;
+      field[xIndex][yIndex] += amplitude * ridgeCore * terrace;
     }
   }
 }
@@ -431,7 +583,7 @@ function findAvailableSeedPoint(
   region: SpeakerRegion,
   clusters: SpeakerCluster[],
 ): { point: Point; score: number } {
-  const verticalOffsets = [-0.22, -0.12, 0, 0.12, 0.22];
+  const verticalOffsets = [-0.12, -0.06, 0, 0.06, 0.12];
   const xSteps = Math.max(4, Math.round((region.endX - region.startX) / 78));
   let bestPoint = {
     x: region.midX,
@@ -445,14 +597,14 @@ function findAvailableSeedPoint(
       const candidate = {
         x: clamp(
           lerp(region.startX + 24, region.endX - 24, xAmount) +
-            hashSigned(`${utteranceId}-seed-x-${xIndex}-${verticalOffset}`) * Math.min((region.endX - region.startX) * 0.05, 18),
+            hashSigned(`${utteranceId}-seed-x-${xIndex}-${verticalOffset}`) * Math.min((region.endX - region.startX) * 0.025, 10),
           region.startX + 24,
           region.endX - 24,
         ),
         y: clamp(
           desiredY +
             verticalOffset * MAP_HEIGHT +
-            hashSigned(`${utteranceId}-seed-y-${xIndex}-${verticalOffset}`) * 16,
+            hashSigned(`${utteranceId}-seed-y-${xIndex}-${verticalOffset}`) * 8,
           MAP_PADDING_Y + 34,
           VIEWBOX_HEIGHT - MAP_PADDING_Y - 34,
         ),
@@ -487,13 +639,13 @@ function chooseClusterStart(
   const newSeed = findAvailableSeedPoint(field, occupiedField, utteranceId, desiredY, region, clusters);
   let bestPoint = newSeed.point;
   let bestClusterIndex: number | null = null;
-  let bestScore = newSeed.score + 0.16;
+  let bestScore = newSeed.score + 0.42;
 
   clusters.forEach((cluster, clusterIndex) => {
     const continuationScore =
       scoreRegionPoint(field, occupiedField, cluster.tail, desiredY, region) +
-      (Math.abs(cluster.tail.y - desiredY) / MAP_HEIGHT) * 0.52 +
-      cluster.utteranceCount * 0.045;
+      (Math.abs(cluster.tail.y - desiredY) / MAP_HEIGHT) * 0.36 +
+      cluster.utteranceCount * 0.03;
 
     if (continuationScore < bestScore) {
       bestScore = continuationScore;
@@ -583,6 +735,14 @@ function quadraticPoint(start: Point, control: Point, end: Point, amount: number
   };
 }
 
+function quadraticTangent(start: Point, control: Point, end: Point, amount: number): Point {
+  const inverse = 1 - amount;
+  return {
+    x: 2 * inverse * (control.x - start.x) + 2 * amount * (end.x - control.x),
+    y: 2 * inverse * (control.y - start.y) + 2 * amount * (end.y - control.y),
+  };
+}
+
 function addBezierStroke(
   field: number[][],
   strokeId: string,
@@ -602,39 +762,48 @@ function addBezierStroke(
   for (let index = 0; index <= revealedSegments; index += 1) {
     const t = (index / segmentCount) * revealedProgress;
     const point = quadraticPoint(start, control, end, t);
+    const tangent = quadraticTangent(start, control, end, t);
+    const angle = Math.atan2(
+      Math.abs(tangent.y) < 0.0001 ? end.y - start.y : tangent.y,
+      Math.abs(tangent.x) < 0.0001 ? end.x - start.x : tangent.x,
+    );
     const wobbleX = hashSigned(`${strokeId}-x-${index}`) * radiusX * 0.08;
     const wobbleY = hashSigned(`${strokeId}-y-${index}`) * radiusY * 0.08;
     const envelope = 0.7 + Math.sin((t / Math.max(revealedProgress, 0.0001)) * Math.PI) * 0.3;
 
-    addGaussianStamp(
+    addRidgeStamp(
       field,
       point.x + wobbleX,
       point.y + wobbleY,
-      radiusX * (0.56 + envelope * 0.14),
-      radiusY * (0.54 + envelope * 0.12),
+      radiusX * (0.82 + envelope * 0.18),
+      radiusY * (0.28 + envelope * 0.08),
+      angle,
       amplitude * envelope,
     );
 
     if (index % 4 === 0) {
-      addGaussianStamp(
+      addRidgeStamp(
         field,
         point.x - wobbleX * 0.4,
         point.y - wobbleY * 0.4,
-        radiusX * 1.4,
-        radiusY * 1.34,
-        amplitude * 0.3,
+        radiusX * 1.55,
+        radiusY * 0.34,
+        angle + Math.sin(t * Math.PI * 3) * 0.2,
+        amplitude * 0.22,
       );
     }
 
     lastPoint = point;
   }
 
-  addGaussianStamp(
+  const finalAngle = Math.atan2(end.y - control.y, end.x - control.x);
+  addRidgeStamp(
     field,
     lastPoint.x + hashSigned(`${strokeId}-cap-x`) * radiusX * 0.12,
     lastPoint.y + hashSigned(`${strokeId}-cap-y`) * radiusY * 0.12,
-    radiusX * 0.68,
-    radiusY * 0.62,
+    radiusX * 0.96,
+    radiusY * 0.26,
+    finalAngle,
     amplitude * 0.52,
   );
 
@@ -658,6 +827,22 @@ function interpolatePoint(
   return {
     x: lerp(x1, x2, amount),
     y: lerp(y1, y2, amount),
+  };
+}
+
+function warpContourPoint(point: Point): Point {
+  const nx = clamp((point.x - MAP_PADDING_X) / MAP_WIDTH, 0, 1);
+  const ny = clamp((point.y - MAP_PADDING_Y) / MAP_HEIGHT, 0, 1);
+  const warpX =
+    Math.sin((nx * 7.4 + ny * 2.1) * Math.PI) * 4.2 +
+    Math.cos((nx * 2.8 - ny * 6.3) * Math.PI) * 2.6;
+  const warpY =
+    Math.cos((nx * 6.2 + ny * 2.7) * Math.PI) * 4 +
+    Math.sin((nx * 3.1 - ny * 7.1) * Math.PI) * 2.2;
+
+  return {
+    x: clamp(point.x + warpX, MAP_PADDING_X, VIEWBOX_WIDTH - MAP_PADDING_X),
+    y: clamp(point.y + warpY, MAP_PADDING_Y, VIEWBOX_HEIGHT - MAP_PADDING_Y),
   };
 }
 
@@ -688,7 +873,11 @@ function buildContourPath(field: number[][], level: number): string {
       if (dVal >= level) state |= 8;
 
       const pushSegment = (start: Point, end: Point) => {
-        segments.push(`M ${start.x.toFixed(1)} ${start.y.toFixed(1)} L ${end.x.toFixed(1)} ${end.y.toFixed(1)}`);
+        const warpedStart = warpContourPoint(start);
+        const warpedEnd = warpContourPoint(end);
+        segments.push(
+          `M ${warpedStart.x.toFixed(1)} ${warpedStart.y.toFixed(1)} L ${warpedEnd.x.toFixed(1)} ${warpedEnd.y.toFixed(1)}`,
+        );
       };
 
       switch (state) {
@@ -739,15 +928,19 @@ function buildContourPath(field: number[][], level: number): string {
 export function ConversationLandscape({
   speakers,
   utterances,
-  activeUtteranceId,
   activeSpeakerId,
-  activeTranscriptText,
+  activeTranscript,
+  marginNotes,
+  currentTimeMs,
 }: ConversationLandscapeProps) {
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const wordRefs = useRef(new Map<string, HTMLSpanElement>());
+  const [wordPositions, setWordPositions] = useState<Record<string, WordPosition>>({});
+  const [marginNoteLaunchPositions, setMarginNoteLaunchPositions] = useState<Record<string, LaunchPosition>>({});
   const maxSpeakerDurationMs = speakers.reduce((largest, speaker) => Math.max(largest, speaker.totalDurationMs), 1);
   const totalUtteranceCount = Math.max(utterances.length, 1);
   const occupancyField = createGrid();
   const sectionsById = new Map<string, SpeakerSection>();
-  const activeExcerptLabel = { current: null as ActiveExcerptLabel | null };
   const buildOrder = [...speakers].sort((left, right) => right.totalDurationMs - left.totalDurationMs);
 
   buildOrder.forEach((speaker) => {
@@ -771,32 +964,39 @@ export function ConversationLandscape({
 
     let contourSignalCount = 0;
     const clusters: SpeakerCluster[] = [];
+    let previousCenterY: number | null = null;
 
     speakerUtterances.forEach((utterance, utteranceIndex) => {
       if (utterance.progress <= 0) {
         return;
       }
 
-      if (utterance.hasContourSignal) {
-        contourSignalCount += 1;
-      }
+      contourSignalCount += utterance.contourSignalCount;
 
       const globalSpread = utterance.order / totalUtteranceCount;
+      const localSpread =
+        speakerUtterances.length <= 1 ? 0.5 : utteranceIndex / Math.max(speakerUtterances.length - 1, 1);
+      const spread = lerp(globalSpread, localSpread, 0.72);
       const wavePhase = hashUnit(`${speaker.id}-path`) * Math.PI * 2;
-      const centerY = clamp(
+      const targetCenterY = clamp(
         MAP_PADDING_Y +
           MAP_HEIGHT *
             (0.5 +
-              Math.sin(globalSpread * Math.PI * 1.8 + wavePhase) * 0.22 +
-              Math.cos(globalSpread * Math.PI * 3.4 + wavePhase * 0.7) * 0.12 +
-              hashSigned(`${utterance.id}-y`) * 0.06),
+              Math.sin(spread * Math.PI * 1.15 + wavePhase) * 0.12 +
+              Math.cos(spread * Math.PI * 2.1 + wavePhase * 0.55) * 0.06 +
+              hashSigned(`${utterance.id}-y`) * 0.025),
         MAP_PADDING_Y + 40,
         VIEWBOX_HEIGHT - MAP_PADDING_Y - 40,
       );
+      const centerY =
+        previousCenterY === null
+          ? targetCenterY
+          : clamp(lerp(previousCenterY, targetCenterY, 0.3), MAP_PADDING_Y + 40, VIEWBOX_HEIGHT - MAP_PADDING_Y - 40);
+      previousCenterY = centerY;
 
       const regionWidth = region.endX - region.startX;
       const stepDistance = regionWidth * lerp(0.22, 0.42, talkShare);
-      const verticalDistance = MAP_HEIGHT * lerp(0.09, 0.18, talkShare);
+      const verticalDistance = MAP_HEIGHT * lerp(0.06, 0.11, talkShare);
       const startSelection = chooseClusterStart(field, occupancyField, utterance.id, centerY, region, clusters);
       const startPoint = startSelection.point;
       const directionAngle = pickDirectionAwayFromDensity(
@@ -817,14 +1017,14 @@ export function ConversationLandscape({
           region.endX - 24,
         ),
         y: clamp(
-          startPoint.y + Math.sin(directionAngle) * verticalDistance + hashSigned(`${utterance.id}-end-y`) * 18,
+          startPoint.y + Math.sin(directionAngle) * verticalDistance + hashSigned(`${utterance.id}-end-y`) * 10,
           MAP_PADDING_Y + 30,
           VIEWBOX_HEIGHT - MAP_PADDING_Y - 30,
         ),
       };
 
-      const bendAmount = hashSigned(`${utterance.id}-bend`) * regionWidth * 0.22;
-      const perpendicularOffset = hashSigned(`${utterance.id}-perp`) * Math.min(stepDistance, verticalDistance) * 0.9;
+      const bendAmount = hashSigned(`${utterance.id}-bend`) * regionWidth * 0.14;
+      const perpendicularOffset = hashSigned(`${utterance.id}-perp`) * Math.min(stepDistance, verticalDistance) * 0.48;
       const controlPoint = {
         x: clamp(
           lerp(startPoint.x, endPoint.x, 0.5) + bendAmount - Math.sin(directionAngle) * perpendicularOffset,
@@ -832,7 +1032,7 @@ export function ConversationLandscape({
           region.endX - 24,
         ),
         y: clamp(
-          lerp(startPoint.y, endPoint.y, 0.5) + hashSigned(`${utterance.id}-control-y`) * 52 + Math.cos(directionAngle) * perpendicularOffset,
+          lerp(startPoint.y, endPoint.y, 0.5) + hashSigned(`${utterance.id}-control-y`) * 24 + Math.cos(directionAngle) * perpendicularOffset,
           MAP_PADDING_Y + 28,
           VIEWBOX_HEIGHT - MAP_PADDING_Y - 28,
         ),
@@ -854,21 +1054,6 @@ export function ConversationLandscape({
         utterance.progress,
       );
 
-      if (utterance.id === activeUtteranceId && utterance.substanceExcerpt) {
-        const labelT = clamp(Math.min(utterance.progress * 0.72, 0.68), 0.2, 0.68);
-        const labelPoint = quadraticPoint(startPoint, controlPoint, endPoint, labelT);
-        const labelOffsetY = speaker.side === "right" ? -18 : 18;
-        const labelOffsetX = speaker.side === "right" ? -14 : 14;
-
-        activeExcerptLabel.current = {
-          x: clamp(labelPoint.x + labelOffsetX, MAP_PADDING_X + 30, VIEWBOX_WIDTH - MAP_PADDING_X - 30),
-          y: clamp(labelPoint.y + labelOffsetY, MAP_PADDING_Y + 26, VIEWBOX_HEIGHT - MAP_PADDING_Y - 26),
-          lines: wrapExcerpt(utterance.substanceExcerpt),
-          color,
-          align: speaker.side === "right" ? "end" : "start",
-        };
-      }
-
       if (startSelection.clusterIndex === null) {
         clusters.push({ tail: nextTail, utteranceCount: 1 });
       } else {
@@ -879,17 +1064,17 @@ export function ConversationLandscape({
       }
     });
 
-    const smoothedField = blurField(field, 3);
+    const smoothedField = blurField(field, 1);
     const separatedField = suppressOverlap(smoothedField, occupancyField);
     accumulateField(occupancyField, separatedField, 0.55);
     const maxFieldValue = separatedField.reduce((largest, column) => Math.max(largest, ...column), 0);
-    const levelCount = Math.max(1, contourSignalCount + 1);
+    const levelCount = Math.ceil(clamp(2 + contourSignalCount, 2, 13));
     const levels =
       progressedUtterances.length === 0 || maxFieldValue <= 0.04
         ? []
         : Array.from({ length: levelCount }, (_, levelIndex) =>
-            lerp(maxFieldValue * 0.12, maxFieldValue * 0.78, (levelIndex + 1) / (levelCount + 1)),
-          );
+          lerp(maxFieldValue * 0.08, maxFieldValue * 0.84, (levelIndex + 1) / (levelCount + 1)),
+        );
 
     sectionsById.set(speaker.id, {
       speaker,
@@ -910,86 +1095,265 @@ export function ConversationLandscape({
     .map((speaker) => sectionsById.get(speaker.id))
     .filter((section): section is NonNullable<typeof section> => section !== undefined);
   const activeSection = activeSpeakerId ? sectionsById.get(activeSpeakerId) : undefined;
-  const excerptLabel = activeExcerptLabel.current;
+  const transcriptColor = activeSection?.color ?? "var(--ink)";
+  const transcriptCurrentTimeMs = activeTranscript?.currentTimeMs ?? currentTimeMs;
+  const canvasWidth = canvasRef.current?.clientWidth ?? 0;
+  const canvasHeight = canvasRef.current?.clientHeight ?? 0;
+  const transcriptWordTokens = activeTranscript?.tokens.filter(
+    (token): token is ConversationLandscapeTranscriptWordToken => token.kind === "word",
+  ) ?? [];
+  const visibleMarginNotes = buildVisibleMarginNotes(marginNotes, transcriptCurrentTimeMs);
+
+  const fallingWords = transcriptWordTokens
+    .map((token) => {
+      if (!token.isHedge) {
+        return null;
+      }
+
+      const position = wordPositions[token.id];
+      if (!position || transcriptCurrentTimeMs < token.dropStartMs) {
+        return null;
+      }
+
+      const progress = clamp((transcriptCurrentTimeMs - token.dropStartMs) / token.dropDurationMs, 0, 1);
+      if (progress >= 1) {
+        return null;
+      }
+
+      return {
+        token,
+        position,
+        progress,
+        driftX: hashSigned(`${token.id}-drift`) * 34,
+        rotation: hashSigned(`${token.id}-rotation`) * 18,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null);
+
+  useLayoutEffect(() => {
+    const nextPositions = measureTranscriptWordPositions(canvasRef.current, wordRefs.current);
+    setWordPositions((currentPositions) =>
+      areWordPositionsEqual(currentPositions, nextPositions) ? currentPositions : nextPositions,
+    );
+  }, [activeTranscript]);
+
+  useLayoutEffect(() => {
+    if (!activeTranscript) {
+      return;
+    }
+
+    const activeNoteLaunches = marginNotes
+      .filter((note) => note.utteranceId === activeTranscript.utteranceId)
+      .reduce<Record<string, LaunchPosition>>((positions, note) => {
+        const matchingTokens = transcriptWordTokens.filter(
+          (token) => note.sourceStart < token.end && token.start < note.sourceEnd,
+        );
+
+        if (matchingTokens.length === 0) {
+          return positions;
+        }
+
+        const tokenPositions = matchingTokens
+          .map((token) => wordPositions[token.id])
+          .filter((position): position is WordPosition => position !== undefined);
+
+        if (tokenPositions.length === 0) {
+          return positions;
+        }
+
+        const firstPosition = tokenPositions[0];
+        const top = tokenPositions.reduce((minimum, position) => Math.min(minimum, position.top), firstPosition.top);
+        const left = tokenPositions.reduce((minimum, position) => Math.min(minimum, position.left), firstPosition.left);
+
+        positions[note.id] = { left, top };
+        return positions;
+      }, {});
+
+    setMarginNoteLaunchPositions((currentLaunchPositions) => {
+      const mergedLaunchPositions = { ...currentLaunchPositions, ...activeNoteLaunches };
+      return areLaunchPositionsEqual(currentLaunchPositions, mergedLaunchPositions)
+        ? currentLaunchPositions
+        : mergedLaunchPositions;
+    });
+  }, [activeTranscript, marginNotes, transcriptWordTokens, wordPositions]);
+
+  useEffect(() => {
+    if (!canvasRef.current || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      const nextPositions = measureTranscriptWordPositions(canvasRef.current, wordRefs.current);
+      setWordPositions((currentPositions) =>
+        areWordPositionsEqual(currentPositions, nextPositions) ? currentPositions : nextPositions,
+      );
+    });
+
+    observer.observe(canvasRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <section className="conversation-landscape" aria-label="Conversation landscape">
-      {activeTranscriptText ? (
-        <div
-          className={`conversation-landscape__transcript${
-            activeSection?.speaker.side === "right" ? " conversation-landscape__transcript--right" : ""
-          }`}
-          style={{ color: activeSection?.color ?? "var(--ink)" }}
-          aria-live="polite"
-        >
-          {activeSection ? (
-            <p className="conversation-landscape__transcript-label">{activeSection.speaker.label}</p>
-          ) : null}
-          <p className="conversation-landscape__transcript-copy">{activeTranscriptText}</p>
-        </div>
-      ) : null}
-      <svg
-        className="conversation-landscape__svg"
-        viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
-        role="img"
-        aria-label="Collective terrain map drawn from the conversation"
-      >
-        <rect x="0" y="0" width={VIEWBOX_WIDTH} height={VIEWBOX_HEIGHT} fill="#fbf7ef" />
-        <rect
-          x={MAP_PADDING_X}
-          y={MAP_PADDING_Y}
-          width={MAP_WIDTH}
-          height={MAP_HEIGHT}
-          fill="rgba(255, 255, 255, 0.34)"
-          stroke="rgba(23, 24, 28, 0.08)"
-        />
-        {speakerSections.map(({ speaker, washHref }) =>
-          washHref ? (
-            <image
-              key={`${speaker.id}-wash`}
-              href={washHref}
-              x={MAP_PADDING_X}
-              y={MAP_PADDING_Y}
-              width={MAP_WIDTH}
-              height={MAP_HEIGHT}
-              preserveAspectRatio="none"
-              opacity={speaker.opacity * 0.92}
-            />
-          ) : null,
-        )}
-        {speakerSections.map(({ speaker, color, outerColor, paths }) => (
-          <g key={speaker.id} opacity={speaker.opacity}>
-            {paths.map((path, pathIndex) => (
-              <path
-                key={`${speaker.id}-${pathIndex}`}
-                d={path.d}
-                fill="none"
-                stroke={getContourStroke(pathIndex, paths.length, outerColor, color)}
-                strokeOpacity={lerp(0.76, 0.98, paths.length <= 1 ? 1 : pathIndex / (paths.length - 1))}
-                strokeWidth={1.45}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            ))}
-          </g>
-        ))}
-        {excerptLabel ? (
-          <g className="conversation-landscape__excerpt" aria-hidden="true">
-            <text
-              x={excerptLabel.x}
-              y={excerptLabel.y}
-              textAnchor={excerptLabel.align}
-              fill={excerptLabel.color}
-            >
-              {excerptLabel.lines.map((line: string, index: number) => (
-                <tspan key={`${line}-${index}`} x={excerptLabel.x} dy={index === 0 ? 0 : 18}>
-                  {line}
-                </tspan>
-              ))}
-            </text>
-          </g>
+      <div ref={canvasRef} className="conversation-landscape__canvas">
+        {activeTranscript ? (
+          <div
+            className={`conversation-landscape__transcript${activeSection?.speaker.side === "right" ? " conversation-landscape__transcript--right" : ""
+              }`}
+            style={{ color: transcriptColor }}
+            aria-live="polite"
+          >
+            {activeSection ? (
+              <p className="conversation-landscape__transcript-label">{activeSection.speaker.label}</p>
+            ) : null}
+            <p className="conversation-landscape__transcript-copy">
+              {activeTranscript.tokens.map((token) => {
+                if (token.kind === "text") {
+                  return <span key={token.id}>{token.text}</span>;
+                }
+
+                const isDropping = token.isHedge && activeTranscript.currentTimeMs >= token.dropStartMs;
+
+                return (
+                  <span
+                    key={token.id}
+                    ref={(node) => {
+                      if (node) {
+                        wordRefs.current.set(token.id, node);
+                      } else {
+                        wordRefs.current.delete(token.id);
+                      }
+                    }}
+                    className={[
+                      "conversation-landscape__transcript-word",
+                      token.isHedge ? "conversation-landscape__transcript-word--hedging" : "",
+                      isDropping ? "conversation-landscape__transcript-word--detached" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    {token.text}
+                  </span>
+                );
+              })}
+            </p>
+          </div>
         ) : null}
-      </svg>
+        <div className="conversation-landscape__margin-notes" aria-hidden="true">
+          {visibleMarginNotes.map(({ note, leftPercent, topPercent, widthCh, revealProgress }) => (
+            (() => {
+              const launchPosition = marginNoteLaunchPositions[note.id];
+              const slotLeft = (leftPercent / 100) * canvasWidth;
+              const slotTop = (topPercent / 100) * canvasHeight;
+              const settleProgress = clamp(
+                (transcriptCurrentTimeMs - note.appearAtMs) / Math.max(note.settleDurationMs, 1),
+                0,
+                1,
+              );
+              const swayPhase = hashUnit(`${note.id}-phase`) * Math.PI * 2;
+              const swayAmplitude = lerp(20, 42, hashUnit(`${note.id}-sway`));
+              const settleX = Math.pow(settleProgress, 0.82);
+              const settleY = Math.pow(settleProgress, 1.18);
+              const flutterX = Math.sin(settleProgress * Math.PI * 2.55 + swayPhase) * swayAmplitude * Math.pow(1 - settleProgress, 0.58);
+              const flutterY = Math.cos(settleProgress * Math.PI * 1.55 + swayPhase) * 14 * Math.pow(1 - settleProgress, 0.92);
+              const rotateDeg = Math.sin(settleProgress * Math.PI * 1.8 + swayPhase) * 5.5 * Math.pow(1 - settleProgress, 0.86);
+              const translateX = launchPosition
+                ? lerp(launchPosition.left - slotLeft, 0, settleX) + flutterX
+                : flutterX * 0.45;
+              const translateY = launchPosition
+                ? lerp(launchPosition.top - slotTop, 0, settleY) + flutterY
+                : lerp(26, 0, revealProgress) + flutterY * 0.45;
+
+              return (
+                <p
+                  key={note.id}
+                  className="conversation-landscape__margin-note"
+                  style={{
+                    left: `${leftPercent}%`,
+                    top: `${topPercent}%`,
+                    width: `${widthCh}ch`,
+                    opacity: `${lerp(0.18, 0.72, revealProgress)}`,
+                    transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${rotateDeg}deg)`,
+                  }}
+                >
+                  {note.text}
+                </p>
+              );
+            })()
+          ))}
+        </div>
+        <div className="conversation-landscape__falling-words" style={{ color: transcriptColor }} aria-hidden="true">
+          {fallingWords.map(({ token, position, progress, driftX, rotation }) => {
+            const swayPhase = hashUnit(`${token.id}-phase`) * Math.PI * 2;
+            const sway = Math.sin(progress * Math.PI * 3.15 + swayPhase) * Math.abs(driftX) * 1.18 * Math.pow(1 - progress, 0.4);
+            const glideX = driftX * Math.pow(progress, 0.96);
+            const fallY = lerp(0, 248, Math.pow(progress, 1.18));
+            const bobY = Math.cos(progress * Math.PI * 2.1 + swayPhase) * 12 * Math.pow(1 - progress, 0.72);
+            const rotateDeg =
+              Math.sin(progress * Math.PI * 2.2 + swayPhase) * 8 * Math.pow(1 - progress, 0.52) +
+              rotation * Math.pow(progress, 0.84) * 0.5;
+
+            return (
+              <span
+                key={`${activeTranscript?.utteranceId ?? "utterance"}-${token.id}`}
+                className={[
+                  "conversation-landscape__falling-word",
+                  token.isHedge ? "conversation-landscape__falling-word--hedging" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                style={{
+                  left: `${position.left}px`,
+                  top: `${position.top}px`,
+                  width: `${Math.max(position.width, 1)}px`,
+                  height: `${Math.max(position.height, 1)}px`,
+                  transform: `translate3d(${glideX + sway}px, ${fallY + bobY}px, 0) rotate(${rotateDeg}deg)`,
+                  opacity: `${clamp(1 - Math.pow(progress, 1.35), 0, 1)}`,
+                }}
+              >
+                {token.text}
+              </span>
+            );
+          })}
+        </div>
+        <svg
+          className="conversation-landscape__svg"
+          viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
+          role="img"
+          aria-label="Collective terrain map drawn from the conversation"
+        >
+          {speakerSections.map(({ speaker, washHref }) =>
+            washHref ? (
+              <image
+                key={`${speaker.id}-wash`}
+                href={washHref}
+                x={MAP_PADDING_X}
+                y={MAP_PADDING_Y}
+                width={MAP_WIDTH}
+                height={MAP_HEIGHT}
+                preserveAspectRatio="none"
+                opacity={speaker.opacity * 0.92}
+              />
+            ) : null,
+          )}
+          {speakerSections.map(({ speaker, color, outerColor, paths }) => (
+            <g key={speaker.id} opacity={speaker.opacity}>
+              {paths.map((path, pathIndex) => (
+                <path
+                  key={`${speaker.id}-${pathIndex}`}
+                  d={path.d}
+                  fill="none"
+                  stroke={getContourStroke(pathIndex, paths.length, outerColor, color)}
+                  strokeOpacity={lerp(0.76, 0.98, paths.length <= 1 ? 1 : pathIndex / (paths.length - 1))}
+                  strokeWidth={1.45}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ))}
+            </g>
+          ))}
+        </svg>
+      </div>
     </section>
   );
 }

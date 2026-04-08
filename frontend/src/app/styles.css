@@ -245,35 +245,30 @@ button {
   overflow: hidden;
   height: 1.15rem;
   border-radius: 0.3rem;
-  background: #2da5e8;
+  background: rgb(24, 134, 205);
+  /* base color */
 }
 
-.upload-processing__bar-fill {
+.upload-processing__bar::after {
+  content: '';
   position: absolute;
   inset: 0;
-  background:
-    repeating-linear-gradient(
-      45deg,
-      rgba(24, 134, 205, 0.94) 0 14px,
-      rgba(54, 176, 237, 0.94) 14px 28px
-    );
-  background-size: 56px 56px;
+  width: 200%;
+  /* extra wide so stripes never gap */
+  background: repeating-linear-gradient(45deg,
+      rgba(255, 255, 255, 0) 0 14px,
+      rgba(255, 255, 255, 0.15) 14px 28px);
   animation: processing-stripes 900ms linear infinite;
-}
-
-.upload-processing__copy {
-  margin: 0;
-  color: var(--muted);
-  font-size: 1rem;
-  line-height: 1.5;
+  will-change: transform;
 }
 
 @keyframes processing-stripes {
   from {
-    background-position: 0 0;
+    transform: translateX(0);
   }
+
   to {
-    background-position: 56px 0;
+    transform: translateX(56px);
   }
 }
 
@@ -701,7 +696,7 @@ button {
 
 .transcript-grid {
   display: grid;
-  grid-template-columns: 5rem minmax(140px, 180px) minmax(0, 1fr) auto;
+  grid-template-columns: 5rem minmax(140px, 180px) minmax(0, 1fr);
   gap: 0.9rem;
   padding: 1rem;
   align-items: start;
@@ -713,10 +708,6 @@ button {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   font-size: 0.72rem;
-}
-
-.transcript-grid__actions-label {
-  text-align: right;
 }
 
 .transcript-row__time,
@@ -750,12 +741,6 @@ button {
   line-height: 1.45;
 }
 
-.transcript-row__actions {
-  display: flex;
-  justify-content: end;
-  align-items: start;
-}
-
 .review-editor__footer {
   display: flex;
   justify-content: space-between;
@@ -771,70 +756,64 @@ button {
 }
 
 .playback-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 1.5rem;
-  align-items: end;
+  display: grid;
+  gap: 1rem;
   margin-bottom: 1.25rem;
 }
 
-.playback-media {
-  margin-bottom: 1.5rem;
+.playback-header__summary {
+  display: grid;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.playback-header__title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: end;
+}
+
+.playback-header__transport {
+  width: 100%;
+}
+
+.playback-header__actions {
+  justify-self: end;
 }
 
 .terrain-grid {
-  display: grid;
-  gap: 1.4rem;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-}
-
-.current-payload {
   max-width: 1180px;
-  margin: 1.5rem auto 0;
-}
-
-.current-payload__body {
-  display: grid;
-  gap: 0.85rem;
-}
-
-.current-payload__text {
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.5;
-}
-
-.current-payload__code {
-  margin: 0;
-  padding: 1rem;
-  overflow-x: auto;
-  border-radius: 0.85rem;
-  border: 1px solid rgba(23, 24, 28, 0.08);
-  background: rgba(23, 24, 28, 0.04);
-  color: var(--ink);
-  font-family: "SFMono-Regular", "SF Mono", "Menlo", monospace;
-  font-size: 0.86rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
+  margin: 0 auto;
 }
 
 .conversation-landscape {
   grid-column: 1 / -1;
+  display: block;
+  border: 1px solid rgba(23, 24, 28, 0.08);
+  background: #fbf7ef;
+  overflow: hidden;
+}
+
+.conversation-landscape__canvas {
+  position: relative;
   display: grid;
-  gap: 1rem;
-  padding: 1rem;
-  border: 1px solid rgba(23, 24, 28, 0.1);
-  background:
-    radial-gradient(circle at top, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0) 56%),
-    rgba(255, 255, 255, 0.46);
-  box-shadow: 0 28px 60px rgba(23, 24, 28, 0.06);
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.conversation-landscape__canvas .conversation-landscape__transcript {
+  position: relative;
+  z-index: 3;
+  padding: 0.95rem 1.1rem 0.55rem;
 }
 
 .conversation-landscape__transcript {
   display: grid;
   gap: 0.35rem;
-  padding: 0.15rem 1rem 0.9rem;
+  padding: 0;
 }
 
 .conversation-landscape__transcript--right {
@@ -857,30 +836,80 @@ button {
   max-width: 70ch;
   font-size: clamp(0.98rem, 1.4vw, 1.12rem);
   line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.conversation-landscape__transcript-word {
+  display: inline-block;
+  transition: opacity 140ms ease, filter 180ms ease, transform 180ms ease;
+}
+
+.conversation-landscape__transcript-word--detached {
+  opacity: 0.28;
+  filter: none;
+}
+
+.conversation-landscape__margin-notes {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.conversation-landscape__margin-note {
+  position: absolute;
+  margin: 0;
+  color: rgba(22, 22, 22, 0.58);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+  font-size: clamp(0.78rem, 1.05vw, 0.96rem);
+  line-height: 1.08;
+  letter-spacing: 0.01em;
+  text-wrap: balance;
+  text-align: left;
+  transform-origin: 0 0;
+  will-change: transform, opacity;
+}
+
+.conversation-landscape__falling-words {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.conversation-landscape__falling-word {
+  position: absolute;
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  transform-origin: 50% 0%;
+  white-space: nowrap;
+  font-size: clamp(0.98rem, 1.4vw, 1.12rem);
+  line-height: 1.45;
+  will-change: transform, opacity;
 }
 
 .conversation-landscape__svg {
+  position: relative;
+  z-index: 1;
   display: block;
   width: 100%;
   min-height: 300px;
-  border: 1px solid rgba(23, 24, 28, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(243, 236, 223, 0.52)),
-    #faf7f1;
+  border: 0;
+  background: transparent;
 }
 
-.conversation-landscape__excerpt text {
-  font-family: "Iowan Old Style", "Baskerville", "Palatino Linotype", serif;
-  font-size: 16px;
-  line-height: 1.2;
-  font-style: italic;
-  paint-order: stroke fill;
-  stroke: rgba(251, 247, 239, 0.94);
-  stroke-width: 5px;
-  stroke-linejoin: round;
+.review-media-controls--minimal {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 @media (max-width: 960px) {
+
   .onboarding-hero,
   .onboarding-stack,
   .select-layout,
@@ -894,6 +923,11 @@ button {
 
   .review-toolbar,
   .playback-header {
+    align-items: start;
+  }
+
+  .playback-header__title-row {
+    display: grid;
     align-items: start;
   }
 
@@ -966,7 +1000,15 @@ button {
   }
 
   .conversation-landscape {
-    padding: 0.8rem;
+    padding: 0;
+  }
+
+  .conversation-landscape__canvas {
+    padding: 0;
+  }
+
+  .conversation-landscape__canvas .conversation-landscape__transcript {
+    padding: 0.85rem 0.85rem 0.5rem;
   }
 
   .conversation-landscape__svg {

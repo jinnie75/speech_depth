@@ -120,3 +120,29 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
         self.assertAlmostEqual(sentences[0].sentence_metadata["mean_word_probability"], 0.9125, places=4)
         self.assertEqual(sentences[0].sentence_metadata["low_confidence_word_ratio"], 0.0)
         self.assertEqual(sentences[0].sentence_metadata["avg_segment_logprob"], -0.2)
+
+    def test_segmentation_scopes_word_quality_metadata_to_each_split_sentence(self) -> None:
+        segments = [
+            ASRSegment(
+                segment_index=0,
+                start_ms=0,
+                end_ms=2000,
+                text="Please review. Maybe later?",
+                avg_logprob=-0.4,
+                no_speech_prob=0.03,
+                words=[
+                    ASRWord(word="Please", start_ms=0, end_ms=300, probability=0.98),
+                    ASRWord(word="review.", start_ms=300, end_ms=800, probability=0.96),
+                    ASRWord(word="Maybe", start_ms=800, end_ms=1200, probability=0.55),
+                    ASRWord(word="later?", start_ms=1200, end_ms=2000, probability=0.5),
+                ],
+            )
+        ]
+
+        sentences = segment_transcript(segments)
+
+        self.assertEqual(len(sentences), 2)
+        self.assertAlmostEqual(sentences[0].sentence_metadata["mean_word_probability"], 0.97, places=4)
+        self.assertEqual(sentences[0].sentence_metadata["low_confidence_word_ratio"], 0.0)
+        self.assertAlmostEqual(sentences[1].sentence_metadata["mean_word_probability"], 0.525, places=4)
+        self.assertEqual(sentences[1].sentence_metadata["low_confidence_word_ratio"], 1.0)
