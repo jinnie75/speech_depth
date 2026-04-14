@@ -2,15 +2,22 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Literal
 
 from asr_viz.pipeline.types import ASRSegment, ASRWord, TranscriptResult
+
+PreferredLanguage = Literal["auto", "en", "ko"]
 
 
 class TranscriptionProvider(ABC):
     model_version: str = "unknown"
 
     @abstractmethod
-    def transcribe(self, source_uri: str) -> TranscriptResult:
+    def transcribe(
+        self,
+        source_uri: str,
+        preferred_language: PreferredLanguage | None = None,
+    ) -> TranscriptResult:
         raise NotImplementedError
 
 
@@ -19,14 +26,21 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
         self.model_version = f"faster-whisper:{model_size}"
         self._model_size = model_size
 
-    def transcribe(self, source_uri: str) -> TranscriptResult:
+    def transcribe(
+        self,
+        source_uri: str,
+        preferred_language: PreferredLanguage | None = None,
+    ) -> TranscriptResult:
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise RuntimeError("faster-whisper is not installed") from exc
 
         model = WhisperModel(self._model_size)
-        segments, info = model.transcribe(source_uri, word_timestamps=True)
+        transcribe_kwargs = {"word_timestamps": True}
+        if preferred_language and preferred_language != "auto":
+            transcribe_kwargs["language"] = preferred_language
+        segments, info = model.transcribe(source_uri, **transcribe_kwargs)
 
         parsed_segments: list[ASRSegment] = []
         text_parts: list[str] = []
@@ -67,7 +81,11 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
 class MockTranscriptionProvider(TranscriptionProvider):
     model_version = "mock-transcriber:v1"
 
-    def transcribe(self, source_uri: str) -> TranscriptResult:
+    def transcribe(
+        self,
+        source_uri: str,
+        preferred_language: PreferredLanguage | None = None,
+    ) -> TranscriptResult:
         path = Path(source_uri)
         try:
             text = path.read_text(encoding="utf-8").strip()
@@ -105,7 +123,7 @@ class MockTranscriptionProvider(TranscriptionProvider):
             start_ms = end_ms
 
         return TranscriptResult(
-            language_code="en",
+            language_code=preferred_language if preferred_language in {"en", "ko"} else "en",
             full_text=" ".join(lines),
             segments=segments,
             metadata={"mock_source": True},

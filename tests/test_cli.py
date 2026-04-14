@@ -68,6 +68,7 @@ class CliTests(unittest.TestCase):
                             "source_uri": str(source),
                             "source_type": None,
                             "mime_type": "text/plain",
+                            "language": "ko",
                             "diarization": False,
                             "metadata": "{\"source\":\"test\"}",
                         },
@@ -84,6 +85,7 @@ class CliTests(unittest.TestCase):
                 )
                 claimed = pipeline.claim_next_job(session)
                 self.assertIsNotNone(claimed)
+                self.assertEqual(claimed.media_asset.ingest_metadata["preferred_language"], "ko")
                 pipeline.process_job(session, claimed.id)
 
             with self.session_factory() as session:

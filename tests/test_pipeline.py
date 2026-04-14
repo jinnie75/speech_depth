@@ -75,3 +75,49 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("substance", analysis_results[0].analysis_payload)
             self.assertIn("sentence_count", job.stage_details)
             self.assertEqual(job.asr_model_version, "mock-transcriber:v1")
+
+    def test_pipeline_uses_preferred_language_for_korean_jobs(self) -> None:
+        tmp_path = Path(self._testMethodName)
+        tmp_path.mkdir(exist_ok=True)
+        source = tmp_path / "conversation_ko.txt"
+        source.write_text("안녕하세요.\n오늘 일정 이야기해요.", encoding="utf-8")
+
+        self.addCleanup(lambda: shutil.rmtree(tmp_path, ignore_errors=True))
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        pipeline = ProcessingPipeline(
+            transcription_provider=MockTranscriptionProvider(),
+            analysis_provider=HeuristicAnalysisProvider(),
+            diarization_provider=NoOpDiarizationProvider(),
+        )
+
+        with session_factory() as session:
+            create_job(
+                session,
+                source_uri=str(source),
+                source_type="file",
+                diarization_enabled=False,
+                mime_type="text/plain",
+                checksum=None,
+                ingest_metadata={"preferred_language": "ko"},
+            )
+
+        with session_factory() as session:
+            claimed_job = pipeline.claim_next_job(session)
+            self.assertIsNotNone(claimed_job)
+            result_job = pipeline.process_job(session, claimed_job.id)
+            self.assertEqual(result_job.status, "completed")
+
+        with session_factory() as session:
+            transcript = session.scalar(select(Transcript))
+            analysis_results = session.scalars(select(AnalysisResult)).all()
+            job = session.scalar(select(ProcessingJob))
+
+            self.assertIsNotNone(transcript)
+            self.assertEqual(transcript.language_code, "ko")
+            self.assertEqual(job.stage_details["preferred_language"], "ko")
+            self.assertTrue(analysis_results[0].analysis_payload["language_supported"])
+            self.assertIn("hedging", analysis_results[0].analysis_payload)
+            self.assertIn("substance", analysis_results[0].analysis_payload)

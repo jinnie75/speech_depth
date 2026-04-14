@@ -52,13 +52,18 @@ class ProcessingPipeline:
 
         try:
             source_uri = resolve_media_source(job, job.media_asset)
-            transcript_result = self._transcription_provider.transcribe(source_uri)
+            preferred_language = _preferred_language_override(job.media_asset.ingest_metadata)
+            transcript_result = self._transcription_provider.transcribe(
+                source_uri,
+                preferred_language=preferred_language,
+            )
             job.asr_model_version = self._transcription_provider.model_version
             job.current_stage = JobStage.DIARIZATION.value if job.diarization_enabled else JobStage.ANALYSIS.value
             job.stage_details = {
                 **job.stage_details,
                 "segments": len(transcript_result.segments),
                 "resolved_source_uri": source_uri,
+                "preferred_language": preferred_language or "auto",
             }
 
             transcript = Transcript(
@@ -86,7 +91,10 @@ class ProcessingPipeline:
                     )
                 )
 
-            sentences = segment_transcript(transcript_result.segments)
+            sentences = segment_transcript(
+                transcript_result.segments,
+                language_code=transcript_result.language_code,
+            )
             if job.diarization_enabled:
                 speaker_count_override = _speaker_count_override(job.media_asset.ingest_metadata)
                 sentences = self._diarization_provider.assign_speakers(
@@ -120,7 +128,11 @@ class ProcessingPipeline:
 
             session.flush()
 
-            analysis_results = self._analysis_provider.analyze(sentences, transcript_result.full_text)
+            analysis_results = self._analysis_provider.analyze(
+                sentences,
+                transcript_result.full_text,
+                language_code=transcript_result.language_code,
+            )
             job.analysis_model_version = self._analysis_provider.model_version
 
             for unit, analysis in zip(sentence_units, analysis_results, strict=True):
@@ -178,4 +190,12 @@ def _speaker_count_override(ingest_metadata: dict | None) -> int | None:
         return 1
     if speaker_mode == "dialogue":
         return 2
+    return None
+
+
+def _preferred_language_override(ingest_metadata: dict | None) -> str | None:
+    metadata = ingest_metadata or {}
+    preferred_language = metadata.get("preferred_language")
+    if preferred_language in {"auto", "en", "ko"}:
+        return preferred_language
     return None

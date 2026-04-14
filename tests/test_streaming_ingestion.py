@@ -10,6 +10,7 @@ import asr_viz.api.main as api_main
 import asr_viz.db.session as db_session_module
 import asr_viz.services.streaming as streaming_module
 from asr_viz.db.base import Base
+from asr_viz.models.job import ProcessingJob
 from asr_viz.providers.analysis_v2 import HeuristicAnalysisProvider
 from asr_viz.providers.diarization import NoOpDiarizationProvider
 from asr_viz.providers.transcription import MockTranscriptionProvider
@@ -57,6 +58,7 @@ class StreamingIngestionTests(unittest.TestCase):
                 "mime_type": "text/plain",
                 "original_filename": "conversation.txt",
                 "diarization_enabled": False,
+                "preferred_language": "ko",
                 "ingest_metadata": {"source": "test"},
             },
         )
@@ -97,6 +99,10 @@ class StreamingIngestionTests(unittest.TestCase):
         self.assertIsNotNone(finalize_payload["processing_job_id"])
 
         with self.session_factory() as session:
+            job = session.query(ProcessingJob).order_by(ProcessingJob.created_at.desc()).first()
+            self.assertIsNotNone(job)
+            self.assertEqual(job.media_asset.ingest_metadata["preferred_language"], "ko")
+
             pipeline = ProcessingPipeline(
                 transcription_provider=MockTranscriptionProvider(),
                 analysis_provider=HeuristicAnalysisProvider(),

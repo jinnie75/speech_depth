@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("source_uri", help="Absolute local path or URL to process.")
     submit.add_argument("--source-type", choices=["file", "url", "opaque"], default=None)
     submit.add_argument("--mime-type", default=None)
+    submit.add_argument("--language", choices=["auto", "en", "ko"], default="auto")
     submit.add_argument("--diarization", action="store_true", help="Enable speaker diarization when available.")
     submit.add_argument(
         "--metadata",
@@ -66,6 +67,7 @@ def main() -> None:
 
 def _submit(args: argparse.Namespace) -> None:
     metadata = json.loads(args.metadata)
+    metadata["preferred_language"] = args.language
     source_type = args.source_type or infer_source_type(args.source_uri)
     if source_type == "file":
         path = Path(args.source_uri)

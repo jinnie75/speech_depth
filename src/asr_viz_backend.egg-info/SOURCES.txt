@@ -46,3 +46,4 @@ tests/test_pipeline.py
 tests/test_segmentation.py
 tests/test_streaming_ingestion.py
 tests/test_transcript_review_api.py
+tests/test_transcription_provider.py

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+PreferredLanguage = Literal["auto", "en", "ko"]
 
 
 class CreateJobRequest(BaseModel):
@@ -13,6 +16,7 @@ class CreateJobRequest(BaseModel):
     diarization_enabled: bool = False
     mime_type: str | None = None
     checksum: str | None = None
+    preferred_language: PreferredLanguage = "auto"
     ingest_metadata: dict = Field(default_factory=dict)
 
 
@@ -22,6 +26,7 @@ class CreateStreamSessionRequest(BaseModel):
     mime_type: str | None = None
     original_filename: str | None = None
     diarization_enabled: bool = False
+    preferred_language: PreferredLanguage = "auto"
     ingest_metadata: dict = Field(default_factory=dict)
 
 

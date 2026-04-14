@@ -53,6 +53,13 @@ def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _with_preferred_language(ingest_metadata: dict | None, preferred_language: str) -> dict:
+    return {
+        **(ingest_metadata or {}),
+        "preferred_language": preferred_language,
+    }
+
+
 def _serialize_stream_session(stream_session: StreamIngestionSession) -> StreamSessionResponse:
     job = stream_session.processing_job
     return StreamSessionResponse(
@@ -100,7 +107,7 @@ def create_processing_job(
         diarization_enabled=request.diarization_enabled,
         mime_type=request.mime_type,
         checksum=request.checksum,
-        ingest_metadata=request.ingest_metadata,
+        ingest_metadata=_with_preferred_language(request.ingest_metadata, request.preferred_language),
     )
     return job
 
@@ -115,7 +122,7 @@ def create_streaming_session(
         mime_type=request.mime_type,
         original_filename=request.original_filename,
         diarization_enabled=request.diarization_enabled,
-        ingest_metadata=request.ingest_metadata,
+        ingest_metadata=_with_preferred_language(request.ingest_metadata, request.preferred_language),
     )
     return _serialize_stream_session(stream_session)
 

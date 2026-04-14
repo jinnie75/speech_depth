@@ -7,6 +7,7 @@ from asr_viz.pipeline.types import ASRSegment, ASRWord, SentenceCandidate
 
 
 _TOKEN_RE = re.compile(r"\S+")
+_KOREAN_TERMINAL_PUNCTUATION = {".", "!", "?", "。", "！", "？"}
 _CAPITALIZED_STARTER_MIN_TOKENS = 4
 _CAPITALIZED_STARTER_GAP_MS = 250
 _NON_TERMINAL_ABBREVIATIONS = {
@@ -125,7 +126,13 @@ class _SegmentEntry:
     words: list[_WordEntry]
 
 
-def segment_transcript(segments: list[ASRSegment]) -> list[SentenceCandidate]:
+def segment_transcript(
+    segments: list[ASRSegment],
+    language_code: str | None = None,
+) -> list[SentenceCandidate]:
+    if _is_korean_language(language_code):
+        return _segment_transcript_korean(segments)
+
     timeline = _build_timeline(segments)
     if timeline is None:
         return []
@@ -142,6 +149,32 @@ def segment_transcript(segments: list[ASRSegment]) -> list[SentenceCandidate]:
         )
         for utterance_index, (sentence_start, sentence_end) in enumerate(spans)
     ]
+
+
+def _segment_transcript_korean(segments: list[ASRSegment]) -> list[SentenceCandidate]:
+    utterance_index = 0
+    sentences: list[SentenceCandidate] = []
+
+    for segment in segments:
+        timeline = _build_timeline([segment])
+        if timeline is None:
+            continue
+
+        combined_text, segment_entries = timeline
+        spans = _sentence_spans_by_terminal_punctuation(combined_text, _KOREAN_TERMINAL_PUNCTUATION)
+        for sentence_start, sentence_end in spans:
+            sentences.append(
+                _build_sentence_candidate(
+                    combined_text,
+                    segment_entries,
+                    sentence_start,
+                    sentence_end,
+                    utterance_index,
+                )
+            )
+            utterance_index += 1
+
+    return sentences
 
 
 def _build_sentence_candidate(
@@ -270,6 +303,32 @@ def _sentence_spans(text: str, tokens: list[_TokenEntry]) -> list[tuple[int, int
     return [(span_start, span_end) for span_start, span_end in spans if text[span_start:span_end].strip()]
 
 
+def _sentence_spans_by_terminal_punctuation(
+    text: str,
+    terminal_punctuation: set[str],
+) -> list[tuple[int, int]]:
+    if not text.strip():
+        return []
+
+    spans: list[tuple[int, int]] = []
+    start = _skip_whitespace(text, 0)
+
+    for index, character in enumerate(text):
+        if character not in terminal_punctuation:
+            continue
+
+        end = index + 1
+        while end < len(text) and text[end] in "\"')]}":
+            end += 1
+        spans.append((start, end))
+        start = _skip_whitespace(text, end)
+
+    if start < len(text):
+        spans.append((start, len(text)))
+
+    return [(span_start, span_end) for span_start, span_end in spans if text[span_start:span_end].strip()]
+
+
 def _map_words_to_global_ranges(text: str, words: list[ASRWord], global_offset: int) -> list[_WordEntry]:
     if not words:
         return []
@@ -387,3 +446,8 @@ def _interpolate_ms(segment_entry: _SegmentEntry, char_offset: int) -> int:
 
 def _ranges_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
     return max(start_a, start_b) < min(end_a, end_b)
+
+
+def _is_korean_language(language_code: str | None) -> bool:
+    normalized = (language_code or "").strip().lower()
+    return normalized == "ko" or normalized.startswith("ko-")

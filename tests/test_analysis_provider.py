@@ -72,7 +72,94 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
         self.assertTrue(results[0].analysis_payload["substance"]["matches"])
         self.assertEqual(results[0].semantic_confidence_score, 0.5)
 
-    def test_emotion_word_matches_are_backed_by_vendored_lexicon_and_nltk_corpora(self) -> None:
+    def test_i_am_substance_requires_emotion_word_in_same_sentence(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        sentence = "I am tired and overwhelmed."
+
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text=sentence,
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text=sentence,
+        )
+
+        substance = results[0].analysis_payload["substance"]
+        self.assertIn("i_am", substance["categories"])
+        self.assertIn("i am tired", substance["matches"])
+        self.assertIn("emotion_word", substance["categories"])
+        self.assertIn("overwhelmed", substance["matches"])
+
+    def test_i_am_substance_allows_non_adjective_descriptor(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        sentence = "I am a mess and overwhelmed."
+
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text=sentence,
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text=sentence,
+        )
+
+        substance = results[0].analysis_payload["substance"]
+        self.assertIn("i_am", substance["categories"])
+        self.assertIn("i am a mess", substance["matches"])
+
+    def test_i_am_substance_uses_nrc_membership_without_pos_requirement(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        sentence = "I'm a failure."
+
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text=sentence,
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text=sentence,
+        )
+
+        substance = results[0].analysis_payload["substance"]
+        self.assertIn("i_am", substance["categories"])
+        self.assertIn("i am a failure", substance["matches"])
+        self.assertNotIn("emotion_word", substance["categories"])
+
+    def test_i_am_substance_skips_sentences_without_emotion_word(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        sentence = "I am tall today."
+
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text=sentence,
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text=sentence,
+        )
+
+        substance = results[0].analysis_payload["substance"]
+        self.assertNotIn("i_am", substance["categories"])
+        self.assertNotIn("i am tall", substance["matches"])
+
+    def test_emotion_word_matches_are_backed_by_vendored_lexicon_and_nltk_wordnet(self) -> None:
         provider = HeuristicAnalysisProvider()
         sentence = "Overwhelmed and angry."
 
@@ -146,3 +233,67 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
         self.assertEqual(sentences[0].sentence_metadata["low_confidence_word_ratio"], 0.0)
         self.assertAlmostEqual(sentences[1].sentence_metadata["mean_word_probability"], 0.525, places=4)
         self.assertEqual(sentences[1].sentence_metadata["low_confidence_word_ratio"], 1.0)
+
+    def test_non_english_analysis_returns_safe_empty_payload(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text="아마 괜찮다면 오늘 이야기해도 될까요?",
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text="아마 괜찮다면 오늘 이야기해도 될까요?",
+            language_code="ko",
+        )
+
+        payload = results[0].analysis_payload
+        self.assertTrue(payload["language_supported"])
+        self.assertIn("아마", payload["hedging"]["matches"])
+        self.assertIn("괜찮다면", payload["hedging"]["matches"])
+
+    def test_korean_substance_detects_self_expression_and_emotion_language(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text="저는 너무 불안하고 마음이 답답해요.",
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text="저는 너무 불안하고 마음이 답답해요.",
+            language_code="ko",
+        )
+
+        substance = results[0].analysis_payload["substance"]
+        self.assertIn("self_expression", substance["categories"])
+        self.assertIn("emotion_word", substance["categories"])
+        self.assertTrue(any("불안" in match or "답답" in match for match in substance["matches"]))
+
+    def test_unsupported_language_analysis_returns_safe_empty_payload(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text="こんにちは、少し不安です。",
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text="こんにちは、少し不安です。",
+            language_code="ja",
+        )
+
+        payload = results[0].analysis_payload
+        self.assertFalse(payload["language_supported"])
+        self.assertEqual(payload["unsupported_language"], "ja")
+        self.assertEqual(payload["hedging"]["matches"], [])
+        self.assertEqual(payload["substance"]["matches"], [])

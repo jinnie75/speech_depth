@@ -132,3 +132,41 @@ class SegmentationTests(unittest.TestCase):
         self.assertEqual(len(sentences), 2)
         self.assertEqual(sentences[0].text, "I spoke to Dr. Smith yesterday.")
         self.assertEqual(sentences[1].text, "He agreed right away.")
+
+    def test_segment_transcript_splits_korean_sentences_on_terminal_punctuation(self) -> None:
+        segments = [
+            ASRSegment(
+                segment_index=0,
+                start_ms=0,
+                end_ms=2400,
+                text="안녕하세요. 오늘 일정 괜찮아요?",
+                words=[
+                    ASRWord(word="안녕하세요.", start_ms=0, end_ms=900, probability=0.97),
+                    ASRWord(word="오늘", start_ms=900, end_ms=1300, probability=0.96),
+                    ASRWord(word="일정", start_ms=1300, end_ms=1700, probability=0.95),
+                    ASRWord(word="괜찮아요?", start_ms=1700, end_ms=2400, probability=0.94),
+                ],
+            )
+        ]
+
+        sentences = segment_transcript(segments, language_code="ko")
+
+        self.assertEqual(len(sentences), 2)
+        self.assertEqual(sentences[0].text, "안녕하세요.")
+        self.assertEqual(sentences[0].end_ms, 900)
+        self.assertEqual(sentences[1].text, "오늘 일정 괜찮아요?")
+        self.assertEqual(sentences[1].start_ms, 900)
+
+    def test_segment_transcript_keeps_korean_segment_boundaries_without_punctuation(self) -> None:
+        segments = [
+            ASRSegment(segment_index=0, start_ms=0, end_ms=1000, text="오늘은 회의 준비"),
+            ASRSegment(segment_index=1, start_ms=1000, end_ms=2100, text="내일은 발표 연습"),
+        ]
+
+        sentences = segment_transcript(segments, language_code="ko")
+
+        self.assertEqual(len(sentences), 2)
+        self.assertEqual(sentences[0].text, "오늘은 회의 준비")
+        self.assertEqual(sentences[0].source_segment_ids, [0])
+        self.assertEqual(sentences[1].text, "내일은 발표 연습")
+        self.assertEqual(sentences[1].source_segment_ids, [1])
