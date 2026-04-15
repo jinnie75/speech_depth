@@ -11,11 +11,14 @@
   --accent-soft: #dcd0bf;
   --highlight: #0a8f87;
   --highlight-soft: rgba(10, 143, 135, 0.12);
-  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  --ui-font: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --transcript-font: "Noto Serif SC", "Songti SC", "Source Han Serif SC", serif;
+  --landscape-transcript-height: clamp(5.5rem, 10vw, 7rem);
+  font-family: var(--ui-font);
   color: var(--ink);
-  background:
+  /* background:
     radial-gradient(circle at top, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0) 34%),
-    linear-gradient(180deg, #fcfaf6 0%, var(--paper) 56%, var(--paper-shadow) 100%);
+    linear-gradient(180deg, #fcfaf6 0%, var(--paper) 56%, var(--paper-shadow) 100%); */
 }
 
 * {
@@ -110,7 +113,7 @@ button {
 .onboarding-hero__copy h1,
 .playback-header h1 {
   margin: 0.25rem 0 0.75rem;
-  font-family: "Iowan Old Style", "Baskerville", "Palatino Linotype", serif;
+  font-family: var(--ui-font);
   font-size: clamp(2.5rem, 5vw, 4.25rem);
   line-height: 1.03;
   letter-spacing: -0.035em;
@@ -210,7 +213,7 @@ button {
 
 .upload-workflow {
   display: grid;
-  gap: 1rem;
+  gap: 1.35rem;
   min-height: 220px;
   padding: 1.5rem;
   border: 1px solid var(--line);
@@ -236,7 +239,7 @@ button {
 .upload-processing h3 {
   margin: 0;
   font-size: clamp(2rem, 4vw, 2.5rem);
-  font-family: "Iowan Old Style", "Baskerville", "Palatino Linotype", serif;
+  font-family: var(--ui-font);
   letter-spacing: -0.03em;
 }
 
@@ -292,17 +295,29 @@ button {
 }
 
 .upload-workflow__controls {
+  display: grid;
+  justify-items: center;
+  gap: 0.8rem;
+}
+
+.upload-workflow__actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  align-items: end;
-  gap: 1rem;
+  align-items: center;
+  column-gap: 1.5rem;
+  row-gap: 1rem;
 }
 
 .speaker-step {
-  display: grid;
-  gap: 0.55rem;
-  justify-items: center;
+  display: flex;
+  align-items: center;
+}
+
+.speaker-step__label {
+  display: block;
+  width: 100%;
+  text-align: center;
 }
 
 .speaker-step__options {
@@ -588,6 +603,11 @@ button {
 .review-toolbar__title {
   display: grid;
   gap: 0.45rem;
+  flex: 1 1 auto;
+}
+
+.review-toolbar .title-input {
+  min-width: min(100%, 56rem);
 }
 
 .review-toolbar__actions,
@@ -738,6 +758,7 @@ button {
   border-radius: 1rem;
   padding: 0.8rem 1rem;
   resize: vertical;
+  font-family: var(--ui-font);
   line-height: 1.45;
 }
 
@@ -779,6 +800,9 @@ button {
 }
 
 .playback-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   justify-self: end;
 }
 
@@ -805,25 +829,37 @@ button {
 }
 
 .conversation-landscape__canvas .conversation-landscape__transcript {
-  position: relative;
+  position: absolute;
+  top: 0.55rem;
+  left: 50%;
   z-index: 3;
+  width: min(calc(100% - 2.2rem), 72ch);
+  min-height: var(--landscape-transcript-height);
+  max-height: var(--landscape-transcript-height);
   padding: 0.95rem 1.1rem 0.55rem;
+  overflow: hidden;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .conversation-landscape__transcript {
   display: grid;
   gap: 0.35rem;
   padding: 0;
+  align-content: start;
+  justify-items: center;
+  text-align: center;
 }
 
 .conversation-landscape__transcript--right {
-  justify-items: end;
-  text-align: right;
+  justify-items: center;
+  text-align: center;
 }
 
 .conversation-landscape__transcript-label,
 .conversation-landscape__transcript-copy {
   margin: 0;
+  font-family: var(--transcript-font);
 }
 
 .conversation-landscape__transcript-label {
@@ -837,6 +873,7 @@ button {
   font-size: clamp(0.98rem, 1.4vw, 1.12rem);
   line-height: 1.45;
   text-wrap: pretty;
+  overflow: hidden;
 }
 
 .conversation-landscape__transcript-word {
@@ -861,14 +898,46 @@ button {
   position: absolute;
   margin: 0;
   color: rgba(22, 22, 22, 0.58);
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+  font-family: var(--transcript-font);
+  animation-name: margin-note-settle;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
   font-size: clamp(0.78rem, 1.05vw, 0.96rem);
   line-height: 1.08;
   letter-spacing: 0.01em;
   text-wrap: balance;
-  text-align: left;
-  transform-origin: 0 0;
+  text-align: center;
+  transform-origin: 50% 0;
   will-change: transform, opacity;
+}
+
+@keyframes margin-note-settle {
+  0% {
+    opacity: 0.18;
+    transform:
+      translate3d(calc(-50% + var(--margin-launch-x, 0px)), var(--margin-launch-y, 24px), 0) rotate(0deg);
+  }
+
+  42% {
+    opacity: 0.46;
+    transform:
+      translate3d(calc(-50% + var(--margin-launch-x, 0px) * 0.46 + var(--margin-sway-x, 0px) * 0.38),
+        calc(var(--margin-launch-y, 24px) * 0.42 - var(--margin-bob-y, 0px) * 0.55),
+        0) rotate(calc(var(--margin-rotation, 0deg) * 0.52));
+  }
+
+  74% {
+    opacity: 0.64;
+    transform:
+      translate3d(calc(-50% + var(--margin-launch-x, 0px) * 0.16 - var(--margin-sway-x, 0px) * 0.2),
+        calc(var(--margin-launch-y, 24px) * 0.12 + var(--margin-bob-y, 0px) * 0.18),
+        0) rotate(calc(var(--margin-rotation, 0deg) * 0.22));
+  }
+
+  100% {
+    opacity: 0.72;
+    transform: translate3d(-50%, 0, 0) rotate(0deg);
+  }
 }
 
 .conversation-landscape__falling-words {
@@ -883,12 +952,53 @@ button {
   position: absolute;
   display: inline-flex;
   align-items: flex-start;
-  justify-content: flex-start;
+  justify-content: center;
+  font-family: var(--transcript-font);
+  animation-name: falling-word-drift;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
   transform-origin: 50% 0%;
+  text-align: center;
   white-space: nowrap;
   font-size: clamp(0.98rem, 1.4vw, 1.12rem);
   line-height: 1.45;
   will-change: transform, opacity;
+}
+
+.conversation-landscape__falling-word--settled {
+  animation: none;
+  opacity: 0.76;
+  transform:
+    translate3d(calc(-50% + var(--fall-drift-x, 0px)), var(--fall-distance-y, 248px), 0) rotate(var(--fall-rotation, 0deg));
+}
+
+@keyframes falling-word-drift {
+  0% {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0) rotate(0deg);
+  }
+
+  36% {
+    opacity: 0.94;
+    transform:
+      translate3d(calc(-50% + var(--fall-sway-x, 0px)),
+        calc(var(--fall-distance-y, 248px) * 0.28 - var(--fall-bob-y, 0px)),
+        0) rotate(calc(var(--fall-rotation, 0deg) * 0.24));
+  }
+
+  68% {
+    opacity: 0.62;
+    transform:
+      translate3d(calc(-50% + var(--fall-drift-x, 0px) * 0.72 - var(--fall-sway-x, 0px) * 0.25),
+        calc(var(--fall-distance-y, 248px) * 0.7 + var(--fall-bob-y, 0px) * 0.18),
+        0) rotate(calc(var(--fall-rotation, 0deg) * 0.7));
+  }
+
+  100% {
+    opacity: 0;
+    transform:
+      translate3d(calc(-50% + var(--fall-drift-x, 0px)), var(--fall-distance-y, 248px), 0) rotate(var(--fall-rotation, 0deg));
+  }
 }
 
 .conversation-landscape__svg {
@@ -1008,6 +1118,8 @@ button {
   }
 
   .conversation-landscape__canvas .conversation-landscape__transcript {
+    top: 0.4rem;
+    width: min(calc(100% - 1.4rem), 72ch);
     padding: 0.85rem 0.85rem 0.5rem;
   }
 

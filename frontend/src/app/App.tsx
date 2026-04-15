@@ -3,6 +3,7 @@ import type { ChangeEvent } from "react";
 
 import { ConversationLandscape } from "../components/ConversationLandscape";
 import type {
+  ConversationLandscapeHandle,
   ConversationLandscapeMarginNote,
   ConversationLandscapeTranscript,
   ConversationLandscapeTranscriptToken,
@@ -683,6 +684,48 @@ function findActiveUtterance(utterances: UtteranceSummary[], currentTimeMs: numb
   return latestStarted;
 }
 
+function getUtteranceDropEndMs(utterance: UtteranceSummary): number {
+  const hedgingMatches = extractAnalysisMatches(utterance.analysisPayload?.hedging);
+  const hedgeRanges = findMatchRanges(utterance.text, hedgingMatches);
+
+  return utterance.wordRanges.reduce((latestDropEndMs, wordRange, index) => {
+    if (!hedgeRanges.some((range) => rangesOverlap(range, wordRange))) {
+      return latestDropEndMs;
+    }
+
+    const wordTiming = utterance.wordTimings[index];
+    const wordStartMs = wordTiming?.startMs ?? utterance.startMs;
+    const wordEndMs = wordTiming?.endMs ?? utterance.endMs;
+    const wordDurationMs = Math.max(wordEndMs - wordStartMs, 1);
+    const dropStartMs = wordStartMs + Math.min(wordDurationMs * 0.16, 90);
+    const dropDurationMs = 1600 + Math.min(wordDurationMs * 2.5, 420);
+
+    return Math.max(latestDropEndMs, dropStartMs + dropDurationMs);
+  }, utterance.endMs);
+}
+
+function getConversationFinalSnapshotTimeMs(
+  utterances: UtteranceSummary[],
+  marginNotes: ConversationLandscapeMarginNote[],
+  mediaDurationMs: number,
+): number {
+  const utteranceEndMs = utterances.map((utterance) => utterance.endMs);
+  const utteranceDropEndMs = utterances.map((utterance) => getUtteranceDropEndMs(utterance));
+  const marginNoteEndMs = marginNotes.map((note) => note.appearAtMs + note.settleDurationMs);
+
+  return Math.max(mediaDurationMs, ...utteranceEndMs, ...utteranceDropEndMs, ...marginNoteEndMs, 0);
+}
+
+function buildSnapshotFileName(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `${normalized || "conversation-landscape-final"}.svg`;
+}
+
 function fileToObjectUrl(file: File): string {
   return URL.createObjectURL(file);
 }
@@ -911,10 +954,13 @@ export function App() {
   const [mediaDurationMs, setMediaDurationMs] = useState(0);
   const [isMediaPlaying, setIsMediaPlaying] = useState(false);
   const [isMediaMuted, setIsMediaMuted] = useState(false);
+  const [isPlaybackComplete, setIsPlaybackComplete] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const mediaObjectUrlRef = useRef<string | null>(null);
   const pollingSessionIdRef = useRef<string | null>(null);
   const mediaElementRef = useRef<HTMLVideoElement | null>(null);
+  const playbackFrameRef = useRef<number | null>(null);
+  const landscapeRef = useRef<ConversationLandscapeHandle | null>(null);
 
   const refreshProcessedTranscriptOptions = async (): Promise<ProcessedTranscriptOption[]> => {
     const jobs = await fetchCompletedJobs();
@@ -952,6 +998,7 @@ export function App() {
     setSelectedProcessedTranscriptId(selectedTranscriptId);
     setPlaybackStarted(false);
     setCurrentTimeMs(0);
+    setIsPlaybackComplete(false);
     setError(null);
     setPendingFile(null);
     setUploadProgress(null);
@@ -1090,16 +1137,55 @@ export function App() {
     };
   }, [streamSession?.id, streamSession?.status]);
 
+  useEffect(() => {
+    if (!isMediaPlaying) {
+      if (playbackFrameRef.current !== null) {
+        window.cancelAnimationFrame(playbackFrameRef.current);
+        playbackFrameRef.current = null;
+      }
+      return;
+    }
+
+    const tick = () => {
+      const mediaElement = mediaElementRef.current;
+      if (!mediaElement) {
+        playbackFrameRef.current = null;
+        return;
+      }
+
+      setCurrentTimeMs(mediaElement.currentTime * 1000);
+
+      if (mediaElement.paused || mediaElement.ended) {
+        playbackFrameRef.current = null;
+        return;
+      }
+
+      playbackFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    playbackFrameRef.current = window.requestAnimationFrame(tick);
+
+    return () => {
+      if (playbackFrameRef.current !== null) {
+        window.cancelAnimationFrame(playbackFrameRef.current);
+        playbackFrameRef.current = null;
+      }
+    };
+  }, [isMediaPlaying]);
+
   const utterances = document ? buildUtterances(document) : [];
   const speakerIds = detectSpeakerIds(document);
   const speakerLabels = reviewDraft?.speakerLabels ?? document?.speakerLabels ?? {};
   const speakers = buildSpeakerSummaries(utterances, speakerLabels);
-  const activeUtterance = playbackStarted || currentTimeMs > 0 ? findActiveUtterance(utterances, currentTimeMs) : null;
-  const activeSentence =
-    document?.sentenceUnits.find((sentence) => sentence.id === activeUtterance?.id) ?? null;
   const isReviewDirty = isReviewDraftDirty(document, reviewDraft);
   const isTranscriptProcessing =
     streamSession !== null && ["open", "queued", "processing"].includes(streamSession.status);
+  const marginNotes = buildMarginNotes(utterances);
+  const finalSnapshotTimeMs = getConversationFinalSnapshotTimeMs(utterances, marginNotes, mediaDurationMs);
+  const landscapeTimeMs = isPlaybackComplete ? finalSnapshotTimeMs : currentTimeMs;
+  const activeUtterance = playbackStarted || landscapeTimeMs > 0 ? findActiveUtterance(utterances, landscapeTimeMs) : null;
+  const activeSentence =
+    document?.sentenceUnits.find((sentence) => sentence.id === activeUtterance?.id) ?? null;
   const landscapeSpeakers = speakers.map((speaker, index) => ({
     id: speaker.id,
     label: speaker.label,
@@ -1108,9 +1194,9 @@ export function App() {
     totalDurationMs: speaker.totalDurationMs,
     averagePoliteness: speaker.averagePoliteness,
   }));
-  const activeUtterancePlaybackState = activeUtterance ? getUtterancePlaybackState(activeUtterance, currentTimeMs) : null;
+  const activeUtterancePlaybackState = activeUtterance ? getUtterancePlaybackState(activeUtterance, landscapeTimeMs) : null;
   const landscapeUtterances = utterances.map((utterance, index) => {
-    const playbackState = getUtterancePlaybackState(utterance, currentTimeMs);
+    const playbackState = getUtterancePlaybackState(utterance, landscapeTimeMs);
 
     return {
       id: utterance.id,
@@ -1121,12 +1207,11 @@ export function App() {
       order: index,
     };
   });
-  const marginNotes = buildMarginNotes(utterances);
   const activeTranscript = buildActiveTranscript(
     activeUtterance,
     activeSentence?.analysis_result?.analysis_payload,
     activeUtterancePlaybackState?.visibleWordCount ?? 0,
-    currentTimeMs,
+    landscapeTimeMs,
   );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -1161,6 +1246,7 @@ export function App() {
     setCurrentTimeMs(0);
     setMediaDurationMs(0);
     setIsMediaPlaying(false);
+    setIsPlaybackComplete(false);
     setError(null);
     setStreamSession(null);
     setUploadProgress(0);
@@ -1295,6 +1381,7 @@ export function App() {
       setCurrentTimeMs(0);
       setMediaDurationMs(0);
       setIsMediaPlaying(false);
+      setIsPlaybackComplete(false);
       setPendingFile(null);
       setSelectedProcessedTranscriptId("");
       setTranscriptLoadStatus("idle");
@@ -1309,8 +1396,12 @@ export function App() {
     }
   };
 
-  const syncMediaState = (element: HTMLVideoElement) => {
+  const syncMediaCurrentTime = (element: HTMLVideoElement) => {
     setCurrentTimeMs(element.currentTime * 1000);
+  };
+
+  const syncMediaState = (element: HTMLVideoElement) => {
+    syncMediaCurrentTime(element);
     setMediaDurationMs(Number.isFinite(element.duration) ? element.duration * 1000 : 0);
     setIsMediaPlaying(!element.paused);
     setIsMediaMuted(element.muted);
@@ -1331,10 +1422,25 @@ export function App() {
   const handleMediaPlay = () => {
     setPlaybackStarted(true);
     setIsMediaPlaying(true);
+    setIsPlaybackComplete(false);
   };
 
   const handleMediaPause = () => {
+    if (mediaElementRef.current) {
+      syncMediaCurrentTime(mediaElementRef.current);
+      if (mediaElementRef.current.ended) {
+        setIsPlaybackComplete(true);
+      }
+    }
     setIsMediaPlaying(false);
+  };
+
+  const handleMediaEnded = () => {
+    if (mediaElementRef.current) {
+      syncMediaState(mediaElementRef.current);
+    }
+    setIsMediaPlaying(false);
+    setIsPlaybackComplete(true);
   };
 
   const handleMediaVolumeChange = () => {
@@ -1359,7 +1465,8 @@ export function App() {
       return;
     }
     mediaElementRef.current.currentTime = nextTimeMs / 1000;
-    setCurrentTimeMs(nextTimeMs);
+    syncMediaCurrentTime(mediaElementRef.current);
+    setIsPlaybackComplete(mediaDurationMs > 0 && nextTimeMs >= mediaDurationMs - 100);
   };
 
   const toggleMediaMute = () => {
@@ -1368,6 +1475,16 @@ export function App() {
     }
     mediaElementRef.current.muted = !mediaElementRef.current.muted;
     setIsMediaMuted(mediaElementRef.current.muted);
+  };
+
+  const handleDownloadSnapshot = () => {
+    if (!isPlaybackComplete) {
+      return;
+    }
+
+    landscapeRef.current?.downloadSnapshotSvg(
+      buildSnapshotFileName(document?.conversationTitle || mediaName),
+    );
   };
 
   const renderCompactMediaControls = ({ minimal = false }: { minimal?: boolean } = {}) => {
@@ -1389,6 +1506,7 @@ export function App() {
           onLoadedMetadata={handleMediaMetadata}
           onPlay={handleMediaPlay}
           onPause={handleMediaPause}
+          onEnded={handleMediaEnded}
           onTimeUpdate={handleMediaTimeUpdate}
           onSeeked={handleMediaTimeUpdate}
           onVolumeChange={handleMediaVolumeChange}
@@ -1451,7 +1569,6 @@ export function App() {
           <section className="onboarding-stack">
             <article className="surface-card onboarding-choice onboarding-choice--upload">
               <div className="onboarding-choice__header">
-                <p className="eyebrow">Option 1</p>
                 <h2>Upload a file</h2>
               </div>
 
@@ -1466,14 +1583,14 @@ export function App() {
               ) : !pendingFile ? (
                 <label className="upload-dropzone">
                   <input type="file" accept=".mov,.mp4,video/mp4,video/quicktime" onChange={handleFileChange} />
-                  <span className="upload-dropzone__step">Step 1</span>
-                  <strong>add file</strong>
-                  <span className="upload-dropzone__hint">Choose a `.mov` or `.mp4` to start a new transcript.</span>
+                  <span className="upload-dropzone__step">Step 1 upload audio file</span>
+                  <strong>click to add file</strong>
+                  <span className="upload-dropzone__hint">Choose a .mov or .mp4 file to visualize</span>
                 </label>
               ) : (
                 <div className="upload-workflow">
                   <div className="upload-workflow__file">
-                    <p className="upload-workflow__step">Step 1 complete</p>
+                    <p className="upload-workflow__step">Step 1 upload audio file</p>
                     <h3>{pendingFile.name}</h3>
                     <label className="ghost-button upload-workflow__replace">
                       choose another file
@@ -1482,45 +1599,37 @@ export function App() {
                   </div>
 
                   <div className="upload-workflow__controls">
-                    <div className="speaker-step">
-                      <span className="speaker-step__label">Step 2 Select speakers</span>
-                      <div className="speaker-step__options" role="group" aria-label="Expected number of speakers">
-                        {SPEAKER_COUNT_OPTIONS.map((option) => (
-                          <button
-                            key={option}
-                            type="button"
-                            className={`speaker-step__option${speakerCount === option ? " speaker-step__option--active" : ""}`}
-                            aria-pressed={speakerCount === option}
-                            onClick={() => setSpeakerCount(option)}
-                            disabled={isUploading}
-                          >
-                            {option}
-                          </button>
-                        ))}
+                    <span className="speaker-step__label">Step 2 Select number of speakers</span>
+                    <div className="upload-workflow__actions">
+                      <div className="speaker-step">
+                        <div className="speaker-step__options" role="group" aria-label="Expected number of speakers">
+                          {SPEAKER_COUNT_OPTIONS.map((option) => (
+                            <button
+                              key={option}
+                              type="button"
+                              className={`speaker-step__option${speakerCount === option ? " speaker-step__option--active" : ""}`}
+                              aria-pressed={speakerCount === option}
+                              onClick={() => setSpeakerCount(option)}
+                              disabled={isUploading}
+                            >
+                              {option}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
 
-                    <button
-                      type="button"
-                      className="submit-upload"
-                      onClick={handleUploadSubmit}
-                      disabled={!pendingFile || isUploading}
-                    >
-                      Submit
-                    </button>
+                      <button
+                        type="button"
+                        className="submit-upload"
+                        onClick={handleUploadSubmit}
+                        disabled={!pendingFile || isUploading}
+                      >
+                        Submit
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
-
-              {(pendingFile || streamSession) && !isTranscriptProcessing ? (
-                <div className="status-strip onboarding-choice__status">
-                  {pendingFile ? <span>{speakerCount} speaker{speakerCount === 1 ? "" : "s"} selected</span> : null}
-                  {pendingFile ? <span>Ready to upload</span> : null}
-                  {describeStreamStatus(streamSession, uploadProgress) ? (
-                    <span>{describeStreamStatus(streamSession, uploadProgress)}</span>
-                  ) : null}
-                </div>
-              ) : null}
             </article>
 
             <div className="onboarding-divider" aria-hidden="true">
@@ -1529,7 +1638,6 @@ export function App() {
 
             <article className="surface-card onboarding-choice onboarding-choice--select">
               <div className="onboarding-choice__header">
-                <p className="eyebrow">Option 2</p>
                 <h2>Choose a saved conversation</h2>
               </div>
               {processedTranscriptOptions.length === 0 ? (
@@ -1548,7 +1656,7 @@ export function App() {
                       onClick={() => void handleProcessedTranscriptSelect(option)}
                     >
                       <span className="transcript-option__title">{option.label}</span>
-                      <span className="transcript-option__meta">{option.reviewStatus.replace("_", " ")}</span>
+                      {/* <span className="transcript-option__meta">{option.reviewStatus.replace("_", " ")}</span> */}
                     </button>
                   ))}
                 </div>
@@ -1563,12 +1671,11 @@ export function App() {
           <section className="review-top-stack">
             <section className="review-toolbar">
               <div className="review-toolbar__title">
-                <p className="eyebrow">Transcript Review</p>
                 <input
                   className="title-input"
                   value={reviewDraft.conversationTitle}
                   onChange={(event) => updateDraftTitle(event.target.value)}
-                  placeholder="Name this conversation"
+                  placeholder="Name of the conversation"
                 />
               </div>
               <div className="review-toolbar__actions">
@@ -1597,13 +1704,7 @@ export function App() {
             <article className="surface-card review-media">
               <div className="section-heading">
                 <div>
-                  <p className="eyebrow">Media</p>
                   <h2>{mediaName}</h2>
-                </div>
-                <div className="status-strip">
-                  <span>{document.transcriptId}</span>
-                  <span>{speakerIds.length || 0} detected speaker{speakerIds.length === 1 ? "" : "s"}</span>
-                  <span>{document.reviewStatus.replace("_", " ")}</span>
                 </div>
               </div>
               {renderCompactMediaControls()}
@@ -1614,10 +1715,8 @@ export function App() {
             <article className="surface-card review-editor">
               <div className="section-heading review-editor__heading">
                 <div>
-                  <p className="eyebrow">Transcript Editor</p>
-                  <h2>Assign names and correct the transcript</h2>
+                  <h2>Name the speakers and edit the transcript</h2>
                 </div>
-                <p className="surface-note">Every row is editable. Update speaker names, reassign speakers, and revise transcript text in place.</p>
               </div>
 
               {speakerIds.length > 0 ? (
@@ -1643,7 +1742,7 @@ export function App() {
               <div className="transcript-grid transcript-grid--header" aria-hidden="true">
                 <span>Timestamp</span>
                 <span>Speaker</span>
-                <span>Text</span>
+                <span>Transcript</span>
               </div>
 
               <div className="transcript-editor-list">
@@ -1698,7 +1797,7 @@ export function App() {
 
               <div className="review-editor__footer">
                 <span className="save-indicator">
-                  {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : isReviewDirty ? "Unsaved changes" : "Up to date"}
+                  {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : isReviewDirty ? "Click to save new changes" : ""}
                 </span>
                 <div className="review-editor__footer-actions">
                   <button
@@ -1746,9 +1845,8 @@ export function App() {
         <>
           <section className="playback-header">
             <div className="playback-header__summary">
-              <p className="eyebrow">Visualization</p>
               <div className="playback-header__title-row">
-                <h1>{document.conversationTitle || mediaName}</h1>
+                <h2>{document.conversationTitle || mediaName}</h2>
                 <div className="playback-header__actions">
                   <button type="button" className="ghost-button" onClick={() => setMode("select")}>
                     Back to Files
@@ -1756,6 +1854,11 @@ export function App() {
                   <button type="button" className="submit-upload" onClick={() => setMode("review")}>
                     Edit Transcript
                   </button>
+                  {isPlaybackComplete ? (
+                    <button type="button" className="ghost-button" onClick={handleDownloadSnapshot}>
+                      Download Final SVG
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <div className="playback-header__transport">{renderCompactMediaControls({ minimal: true })}</div>
@@ -1770,12 +1873,14 @@ export function App() {
               </div>
             ) : (
               <ConversationLandscape
+                ref={landscapeRef}
                 speakers={landscapeSpeakers}
                 utterances={landscapeUtterances}
                 activeSpeakerId={activeUtterance?.speakerId ?? null}
                 activeTranscript={activeTranscript}
                 marginNotes={marginNotes}
-                currentTimeMs={currentTimeMs}
+                currentTimeMs={landscapeTimeMs}
+                snapshotMode={isPlaybackComplete ? "final" : "live"}
               />
             )}
           </section>

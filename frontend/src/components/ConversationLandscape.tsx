@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 
 interface ConversationLandscapeSpeaker {
   id: string;
@@ -63,6 +63,11 @@ interface ConversationLandscapeProps {
   activeTranscript: ConversationLandscapeTranscript | null;
   marginNotes: ConversationLandscapeMarginNote[];
   currentTimeMs: number;
+  snapshotMode?: "live" | "final";
+}
+
+export interface ConversationLandscapeHandle {
+  downloadSnapshotSvg: (fileName?: string) => boolean;
 }
 
 interface Point {
@@ -108,8 +113,38 @@ interface MarginNoteSlot {
   widthCh: number;
 }
 
+interface LandscapeSectionsCache {
+  key: string;
+  sectionsById: Map<string, SpeakerSection>;
+}
+
+interface VisibleMarginNote {
+  note: ConversationLandscapeMarginNote;
+  leftPercent: number;
+  topPercent: number;
+  widthCh: number;
+}
+
+interface FallingWordRenderState {
+  token: ConversationLandscapeTranscriptWordToken;
+  position: WordPosition;
+  elapsedMs: number;
+  driftX: number;
+  swayX: number;
+  bobY: number;
+  rotation: number;
+  progress: number;
+  isSettled: boolean;
+}
+
+interface MarginNotesCache {
+  key: string;
+  visibleNotes: VisibleMarginNote[];
+}
+
 const VIEWBOX_WIDTH = 1200;
 const VIEWBOX_HEIGHT = 620;
+const FALL_DISTANCE_Y = 248;
 const MAP_PADDING_X = 0;
 const MAP_PADDING_Y = 0;
 const MAP_WIDTH = VIEWBOX_WIDTH - MAP_PADDING_X * 2;
@@ -156,6 +191,15 @@ function hashUnit(value: string): number {
 
 function hashSigned(value: string): number {
   return hashUnit(value) * 2 - 1;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 function hexToRgb(color: string): { r: number; g: number; b: number } {
@@ -313,13 +357,7 @@ function areLaunchPositionsEqual(
 function buildVisibleMarginNotes(
   marginNotes: ConversationLandscapeMarginNote[],
   currentTimeMs: number,
-): Array<{
-  note: ConversationLandscapeMarginNote;
-  leftPercent: number;
-  topPercent: number;
-  widthCh: number;
-  revealProgress: number;
-}> {
+): VisibleMarginNote[] {
   const revealedNotes = [...marginNotes]
     .filter((note) => currentTimeMs >= note.appearAtMs)
     .sort((left, right) => left.appearAtMs - right.appearAtMs || left.id.localeCompare(right.id));
@@ -344,18 +382,67 @@ function buildVisibleMarginNotes(
     slotQueue.push(chosenSlotIndex);
   });
 
-  return slotQueue.map((slotIndex) => {
+  return MARGIN_NOTE_SLOTS.map((slot, slotIndex) => {
     const note = occupiedSlots.get(slotIndex);
-    const slot = MARGIN_NOTE_SLOTS[slotIndex];
+    if (!note) {
+      return null;
+    }
 
     return {
-      note: note as ConversationLandscapeMarginNote,
+      note,
       leftPercent: slot.leftPercent,
       topPercent: slot.topPercent,
       widthCh: slot.widthCh,
-      revealProgress: clamp((currentTimeMs - (note?.appearAtMs ?? currentTimeMs)) / 420, 0, 1),
     };
-  });
+  }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+}
+
+function getVisibleMarginNotesCacheKey(
+  marginNotes: ConversationLandscapeMarginNote[],
+  currentTimeMs: number,
+): string {
+  return marginNotes
+    .filter((note) => currentTimeMs >= note.appearAtMs)
+    .map((note) => note.id)
+    .join("|");
+}
+
+function buildFallingWordRenderStates(
+  transcriptWordTokens: ConversationLandscapeTranscriptWordToken[],
+  wordPositions: Record<string, WordPosition>,
+  transcriptCurrentTimeMs: number,
+  snapshotMode: "live" | "final",
+): FallingWordRenderState[] {
+  return transcriptWordTokens
+    .map((token) => {
+      if (!token.isHedge) {
+        return null;
+      }
+
+      const position = wordPositions[token.id];
+      if (!position || transcriptCurrentTimeMs < token.dropStartMs) {
+        return null;
+      }
+
+      const elapsedMs = transcriptCurrentTimeMs - token.dropStartMs;
+      const progress = clamp(elapsedMs / token.dropDurationMs, 0, 1);
+      if (progress >= 1 && snapshotMode !== "final") {
+        return null;
+      }
+
+      return {
+        token,
+        position,
+        elapsedMs,
+        driftX: hashSigned(`${token.id}-drift`) * 34,
+        swayX: hashSigned(`${token.id}-sway`) * 18,
+        bobY: 10 + hashUnit(`${token.id}-bob`) * 8,
+        rotation: hashSigned(`${token.id}-rotation`) * 18,
+        progress,
+        isSettled: progress >= 1,
+      };
+    })
+    .filter((item): item is FallingWordRenderState => item !== null);
 }
 
 function getContourStroke(pathIndex: number, pathCount: number, outerColor: string, innerColor: string): string {
@@ -925,18 +1012,10 @@ function buildContourPath(field: number[][], level: number): string {
   return segments.join(" ");
 }
 
-export function ConversationLandscape({
-  speakers,
-  utterances,
-  activeSpeakerId,
-  activeTranscript,
-  marginNotes,
-  currentTimeMs,
-}: ConversationLandscapeProps) {
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-  const wordRefs = useRef(new Map<string, HTMLSpanElement>());
-  const [wordPositions, setWordPositions] = useState<Record<string, WordPosition>>({});
-  const [marginNoteLaunchPositions, setMarginNoteLaunchPositions] = useState<Record<string, LaunchPosition>>({});
+function buildLandscapeSections(
+  speakers: ConversationLandscapeSpeaker[],
+  utterances: ConversationLandscapeUtterance[],
+): Map<string, SpeakerSection> {
   const maxSpeakerDurationMs = speakers.reduce((largest, speaker) => Math.max(largest, speaker.totalDurationMs), 1);
   const totalUtteranceCount = Math.max(utterances.length, 1);
   const occupancyField = createGrid();
@@ -1073,8 +1152,8 @@ export function ConversationLandscape({
       progressedUtterances.length === 0 || maxFieldValue <= 0.04
         ? []
         : Array.from({ length: levelCount }, (_, levelIndex) =>
-          lerp(maxFieldValue * 0.08, maxFieldValue * 0.84, (levelIndex + 1) / (levelCount + 1)),
-        );
+            lerp(maxFieldValue * 0.08, maxFieldValue * 0.84, (levelIndex + 1) / (levelCount + 1)),
+          );
 
     sectionsById.set(speaker.id, {
       speaker,
@@ -1091,6 +1170,51 @@ export function ConversationLandscape({
     });
   });
 
+  return sectionsById;
+}
+
+function getLandscapeSectionsCacheKey(
+  speakers: ConversationLandscapeSpeaker[],
+  utterances: ConversationLandscapeUtterance[],
+): string {
+  const speakerKey = speakers
+    .map((speaker) => `${speaker.id}:${speaker.totalDurationMs}:${Math.round(speaker.averagePoliteness * 100)}`)
+    .join("|");
+  const utteranceKey = utterances
+    .map((utterance) => {
+      const progressBucket = Math.round(utterance.progress * 20);
+      const contourBucket = Math.round(utterance.contourSignalCount * 4);
+      return `${utterance.id}:${utterance.speakerId}:${utterance.order}:${progressBucket}:${contourBucket}`;
+    })
+    .join("|");
+
+  return `${speakerKey}__${utteranceKey}`;
+}
+
+export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, ConversationLandscapeProps>(function ConversationLandscape({
+  speakers,
+  utterances,
+  activeSpeakerId,
+  activeTranscript,
+  marginNotes,
+  currentTimeMs,
+  snapshotMode = "live",
+}: ConversationLandscapeProps, ref) {
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const wordRefs = useRef(new Map<string, HTMLSpanElement>());
+  const sectionsCacheRef = useRef<LandscapeSectionsCache | null>(null);
+  const marginNotesCacheRef = useRef<MarginNotesCache | null>(null);
+  const [wordPositions, setWordPositions] = useState<Record<string, WordPosition>>({});
+  const [marginNoteLaunchPositions, setMarginNoteLaunchPositions] = useState<Record<string, LaunchPosition>>({});
+  const sectionsCacheKey = getLandscapeSectionsCacheKey(speakers, utterances);
+  if (!sectionsCacheRef.current || sectionsCacheRef.current.key !== sectionsCacheKey) {
+    sectionsCacheRef.current = {
+      key: sectionsCacheKey,
+      sectionsById: buildLandscapeSections(speakers, utterances),
+    };
+  }
+  const sectionsById = sectionsCacheRef.current.sectionsById;
+
   const speakerSections = speakers
     .map((speaker) => sectionsById.get(speaker.id))
     .filter((section): section is NonNullable<typeof section> => section !== undefined);
@@ -1102,40 +1226,128 @@ export function ConversationLandscape({
   const transcriptWordTokens = activeTranscript?.tokens.filter(
     (token): token is ConversationLandscapeTranscriptWordToken => token.kind === "word",
   ) ?? [];
-  const visibleMarginNotes = buildVisibleMarginNotes(marginNotes, transcriptCurrentTimeMs);
+  const transcriptTokenLayoutKey = activeTranscript?.tokens.map((token) => token.id).join("|") ?? "";
+  const visibleMarginNotesCacheKey = getVisibleMarginNotesCacheKey(marginNotes, transcriptCurrentTimeMs);
+  if (!marginNotesCacheRef.current || marginNotesCacheRef.current.key !== visibleMarginNotesCacheKey) {
+    marginNotesCacheRef.current = {
+      key: visibleMarginNotesCacheKey,
+      visibleNotes: buildVisibleMarginNotes(marginNotes, transcriptCurrentTimeMs),
+    };
+  }
+  const visibleMarginNotes = marginNotesCacheRef.current.visibleNotes;
+  const fallingWords = buildFallingWordRenderStates(
+    transcriptWordTokens,
+    wordPositions,
+    transcriptCurrentTimeMs,
+    snapshotMode,
+  );
 
-  const fallingWords = transcriptWordTokens
-    .map((token) => {
-      if (!token.isHedge) {
-        return null;
-      }
+  useImperativeHandle(
+    ref,
+    () => ({
+      downloadSnapshotSvg(fileName = "conversation-landscape-final.svg") {
+        if (typeof document === "undefined" || canvasWidth <= 0 || canvasHeight <= 0) {
+          return false;
+        }
 
-      const position = wordPositions[token.id];
-      if (!position || transcriptCurrentTimeMs < token.dropStartMs) {
-        return null;
-      }
+        const scaleX = canvasWidth / VIEWBOX_WIDTH;
+        const scaleY = canvasHeight / VIEWBOX_HEIGHT;
+        const transcriptMarkup = activeTranscript
+          ? `
+            <div style="position:absolute;top:0.55rem;left:50%;z-index:3;width:min(calc(100% - 2.2rem), 72ch);min-height:5.5rem;max-height:5.5rem;padding:0.95rem 1.1rem 0.55rem;overflow:hidden;transform:translateX(-50%);pointer-events:none;display:grid;gap:0.35rem;align-content:start;justify-items:center;text-align:center;color:${escapeXml(transcriptColor)};">
+              ${activeSection ? `<p style="margin:0;font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;letter-spacing:0.14em;text-transform:uppercase;font-size:0.72rem;">${escapeXml(activeSection.speaker.label)}</p>` : ""}
+              <p style="margin:0;max-width:70ch;font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;font-size:1.02rem;line-height:1.45;text-wrap:pretty;overflow:hidden;">
+                ${activeTranscript.tokens
+                  .map((token) => {
+                    if (token.kind === "text") {
+                      return `<span>${escapeXml(token.text)}</span>`;
+                    }
 
-      const progress = clamp((transcriptCurrentTimeMs - token.dropStartMs) / token.dropDurationMs, 0, 1);
-      if (progress >= 1) {
-        return null;
-      }
+                    const isDetached = token.isHedge && transcriptCurrentTimeMs >= token.dropStartMs;
+                    return `<span style="display:inline-block;opacity:${isDetached ? "0.28" : "1"};">${escapeXml(token.text)}</span>`;
+                  })
+                  .join("")}
+              </p>
+            </div>
+          `
+          : "";
+        const marginNotesMarkup = visibleMarginNotes
+          .map(
+            ({ note, leftPercent, topPercent, widthCh }) => `
+              <p style="position:absolute;left:${leftPercent}%;top:${topPercent}%;margin:0;width:${widthCh * 1.5}ch;transform:translateX(-50%);color:rgba(22,22,22,0.58);font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;font-size:0.88rem;line-height:1.08;letter-spacing:0.01em;text-wrap:balance;text-align:center;opacity:0.72;">
+                ${escapeXml(note.text)}
+              </p>
+            `,
+          )
+          .join("");
+        const fallingWordsMarkup = fallingWords
+          .map(
+            ({ token, position, driftX, rotation, isSettled }) => `
+              <span style="position:absolute;left:${position.left + position.width * 0.5}px;top:${position.top}px;width:${Math.max(position.width, 1)}px;height:${Math.max(position.height, 1)}px;display:inline-flex;align-items:flex-start;justify-content:center;font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;font-size:1.02rem;line-height:1.45;text-align:center;white-space:nowrap;color:${escapeXml(transcriptColor)};opacity:${isSettled ? "0.76" : "1"};transform-origin:50% 0%;transform:translate(-50%, 0) translate(${driftX}px, ${FALL_DISTANCE_Y}px) rotate(${rotation}deg);">
+                ${escapeXml(token.text)}
+              </span>
+            `,
+          )
+          .join("");
+        const terrainMarkup = speakerSections
+          .map(({ speaker, washHref, paths, color, outerColor }) => {
+            const washMarkup = washHref
+              ? `<image href="${escapeXml(washHref)}" x="${MAP_PADDING_X}" y="${MAP_PADDING_Y}" width="${MAP_WIDTH}" height="${MAP_HEIGHT}" preserveAspectRatio="none" opacity="${speaker.opacity * 0.92}" />`
+              : "";
+            const pathMarkup = paths
+              .map(
+                (path, pathIndex) => `<path d="${escapeXml(path.d)}" fill="none" stroke="${escapeXml(
+                  getContourStroke(pathIndex, paths.length, outerColor, color),
+                )}" stroke-opacity="${lerp(0.76, 0.98, paths.length <= 1 ? 1 : pathIndex / (paths.length - 1))}" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" />`,
+              )
+              .join("");
+            return `${washMarkup}<g opacity="${speaker.opacity}">${pathMarkup}</g>`;
+          })
+          .join("");
+        const svgMarkup = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}" viewBox="0 0 ${canvasWidth} ${canvasHeight}" role="img" aria-label="Conversation landscape final snapshot">
+  <rect width="${canvasWidth}" height="${canvasHeight}" fill="#fbf7ef" />
+  <g transform="scale(${scaleX} ${scaleY})">
+    ${terrainMarkup}
+  </g>
+  <foreignObject x="0" y="0" width="${canvasWidth}" height="${canvasHeight}">
+    <div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:${canvasWidth}px;height:${canvasHeight}px;">
+      ${transcriptMarkup}
+      ${marginNotesMarkup}
+      ${fallingWordsMarkup}
+    </div>
+  </foreignObject>
+</svg>`;
 
-      return {
-        token,
-        position,
-        progress,
-        driftX: hashSigned(`${token.id}-drift`) * 34,
-        rotation: hashSigned(`${token.id}-rotation`) * 18,
-      };
-    })
-    .filter((item): item is NonNullable<typeof item> => item !== null);
+        const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+        const objectUrl = URL.createObjectURL(blob);
+        const downloadLink = document.createElement("a");
+        downloadLink.href = objectUrl;
+        downloadLink.download = fileName;
+        downloadLink.click();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+        return true;
+      },
+    }),
+    [
+      activeSection,
+      activeTranscript,
+      canvasHeight,
+      canvasWidth,
+      fallingWords,
+      speakerSections,
+      transcriptColor,
+      transcriptCurrentTimeMs,
+      visibleMarginNotes,
+    ],
+  );
 
   useLayoutEffect(() => {
     const nextPositions = measureTranscriptWordPositions(canvasRef.current, wordRefs.current);
     setWordPositions((currentPositions) =>
       areWordPositionsEqual(currentPositions, nextPositions) ? currentPositions : nextPositions,
     );
-  }, [activeTranscript]);
+  }, [transcriptTokenLayoutKey]);
 
   useLayoutEffect(() => {
     if (!activeTranscript) {
@@ -1163,9 +1375,16 @@ export function ConversationLandscape({
 
         const firstPosition = tokenPositions[0];
         const top = tokenPositions.reduce((minimum, position) => Math.min(minimum, position.top), firstPosition.top);
-        const left = tokenPositions.reduce((minimum, position) => Math.min(minimum, position.left), firstPosition.left);
+        const leftEdge = tokenPositions.reduce((minimum, position) => Math.min(minimum, position.left), firstPosition.left);
+        const rightEdge = tokenPositions.reduce(
+          (maximum, position) => Math.max(maximum, position.left + position.width),
+          firstPosition.left + firstPosition.width,
+        );
 
-        positions[note.id] = { left, top };
+        positions[note.id] = {
+          left: leftEdge + (rightEdge - leftEdge) * 0.5,
+          top,
+        };
         return positions;
       }, {});
 
@@ -1175,7 +1394,7 @@ export function ConversationLandscape({
         ? currentLaunchPositions
         : mergedLaunchPositions;
     });
-  }, [activeTranscript, marginNotes, transcriptWordTokens, wordPositions]);
+  }, [activeTranscript?.utteranceId, marginNotes, transcriptTokenLayoutKey, wordPositions]);
 
   useEffect(() => {
     if (!canvasRef.current || typeof ResizeObserver === "undefined") {
@@ -1240,75 +1459,61 @@ export function ConversationLandscape({
           </div>
         ) : null}
         <div className="conversation-landscape__margin-notes" aria-hidden="true">
-          {visibleMarginNotes.map(({ note, leftPercent, topPercent, widthCh, revealProgress }) => (
-            (() => {
-              const launchPosition = marginNoteLaunchPositions[note.id];
-              const slotLeft = (leftPercent / 100) * canvasWidth;
-              const slotTop = (topPercent / 100) * canvasHeight;
-              const settleProgress = clamp(
-                (transcriptCurrentTimeMs - note.appearAtMs) / Math.max(note.settleDurationMs, 1),
-                0,
-                1,
-              );
-              const swayPhase = hashUnit(`${note.id}-phase`) * Math.PI * 2;
-              const swayAmplitude = lerp(20, 42, hashUnit(`${note.id}-sway`));
-              const settleX = Math.pow(settleProgress, 0.82);
-              const settleY = Math.pow(settleProgress, 1.18);
-              const flutterX = Math.sin(settleProgress * Math.PI * 2.55 + swayPhase) * swayAmplitude * Math.pow(1 - settleProgress, 0.58);
-              const flutterY = Math.cos(settleProgress * Math.PI * 1.55 + swayPhase) * 14 * Math.pow(1 - settleProgress, 0.92);
-              const rotateDeg = Math.sin(settleProgress * Math.PI * 1.8 + swayPhase) * 5.5 * Math.pow(1 - settleProgress, 0.86);
-              const translateX = launchPosition
-                ? lerp(launchPosition.left - slotLeft, 0, settleX) + flutterX
-                : flutterX * 0.45;
-              const translateY = launchPosition
-                ? lerp(launchPosition.top - slotTop, 0, settleY) + flutterY
-                : lerp(26, 0, revealProgress) + flutterY * 0.45;
+          {visibleMarginNotes.map(({ note, leftPercent, topPercent, widthCh }) => {
+            const launchPosition = marginNoteLaunchPositions[note.id];
+            const slotLeft = (leftPercent / 100) * canvasWidth;
+            const slotTop = (topPercent / 100) * canvasHeight;
+            const settleDurationMs = Math.max(note.settleDurationMs, 1);
+            const elapsedMs = transcriptCurrentTimeMs - note.appearAtMs;
+            const launchDeltaX = launchPosition ? launchPosition.left - slotLeft : hashSigned(`${note.id}-launch-x`) * 12;
+            const launchDeltaY = launchPosition ? launchPosition.top - slotTop : 26 + hashUnit(`${note.id}-launch-y`) * 10;
 
-              return (
-                <p
-                  key={note.id}
-                  className="conversation-landscape__margin-note"
-                  style={{
-                    left: `${leftPercent}%`,
-                    top: `${topPercent}%`,
-                    width: `${widthCh}ch`,
-                    opacity: `${lerp(0.18, 0.72, revealProgress)}`,
-                    transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${rotateDeg}deg)`,
-                  }}
-                >
-                  {note.text}
-                </p>
-              );
-            })()
-          ))}
+            return (
+              <p
+                key={note.id}
+                className="conversation-landscape__margin-note"
+                style={{
+                  left: `${leftPercent}%`,
+                  top: `${topPercent}%`,
+                  width: `${widthCh * 1.5}ch`,
+                  animationDuration: `${settleDurationMs}ms`,
+                  animationDelay: `${Math.max(-elapsedMs, -settleDurationMs)}ms`,
+                  ["--margin-launch-x" as string]: `${launchDeltaX}px`,
+                  ["--margin-launch-y" as string]: `${launchDeltaY}px`,
+                  ["--margin-sway-x" as string]: `${lerp(20, 42, hashUnit(`${note.id}-sway`))}px`,
+                  ["--margin-bob-y" as string]: `${10 + hashUnit(`${note.id}-bob`) * 8}px`,
+                  ["--margin-rotation" as string]: `${hashSigned(`${note.id}-rotation`) * 5.5}deg`,
+                }}
+              >
+                {note.text}
+              </p>
+            );
+          })}
         </div>
         <div className="conversation-landscape__falling-words" style={{ color: transcriptColor }} aria-hidden="true">
-          {fallingWords.map(({ token, position, progress, driftX, rotation }) => {
-            const swayPhase = hashUnit(`${token.id}-phase`) * Math.PI * 2;
-            const sway = Math.sin(progress * Math.PI * 3.15 + swayPhase) * Math.abs(driftX) * 1.18 * Math.pow(1 - progress, 0.4);
-            const glideX = driftX * Math.pow(progress, 0.96);
-            const fallY = lerp(0, 248, Math.pow(progress, 1.18));
-            const bobY = Math.cos(progress * Math.PI * 2.1 + swayPhase) * 12 * Math.pow(1 - progress, 0.72);
-            const rotateDeg =
-              Math.sin(progress * Math.PI * 2.2 + swayPhase) * 8 * Math.pow(1 - progress, 0.52) +
-              rotation * Math.pow(progress, 0.84) * 0.5;
-
+          {fallingWords.map(({ token, position, elapsedMs, driftX, swayX, bobY, rotation, isSettled }) => {
             return (
               <span
                 key={`${activeTranscript?.utteranceId ?? "utterance"}-${token.id}`}
                 className={[
                   "conversation-landscape__falling-word",
                   token.isHedge ? "conversation-landscape__falling-word--hedging" : "",
+                  isSettled ? "conversation-landscape__falling-word--settled" : "",
                 ]
                   .filter(Boolean)
                   .join(" ")}
                 style={{
-                  left: `${position.left}px`,
+                  left: `${position.left + position.width * 0.5}px`,
                   top: `${position.top}px`,
                   width: `${Math.max(position.width, 1)}px`,
                   height: `${Math.max(position.height, 1)}px`,
-                  transform: `translate3d(${glideX + sway}px, ${fallY + bobY}px, 0) rotate(${rotateDeg}deg)`,
-                  opacity: `${clamp(1 - Math.pow(progress, 1.35), 0, 1)}`,
+                  animationDuration: isSettled ? undefined : `${token.dropDurationMs}ms`,
+                  animationDelay: isSettled ? undefined : `${Math.max(-elapsedMs, -token.dropDurationMs)}ms`,
+                  ["--fall-drift-x" as string]: `${driftX}px`,
+                  ["--fall-sway-x" as string]: `${swayX}px`,
+                  ["--fall-bob-y" as string]: `${bobY}px`,
+                  ["--fall-distance-y" as string]: `${FALL_DISTANCE_Y}px`,
+                  ["--fall-rotation" as string]: `${rotation}deg`,
                 }}
               >
                 {token.text}
@@ -1356,4 +1561,4 @@ export function ConversationLandscape({
       </div>
     </section>
   );
-}
+});
