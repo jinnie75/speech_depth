@@ -90,6 +90,7 @@ interface ProcessedTranscriptOption {
   transcriptId: string;
   label: string;
   mediaSrc: string;
+  createdAt: string;
   reviewStatus: ReviewStatus;
 }
 
@@ -519,6 +520,7 @@ function buildMarginNotes(utterances: UtteranceSummary[]): ConversationLandscape
         return {
           id: `${utterance.id}-substance-clause-${index}-${range.start}-${range.end}`,
           text: utterance.text.slice(range.start, range.end).trim(),
+          speakerId: utterance.speakerId,
           utteranceId: utterance.id,
           appearAtMs: timing.endMs + 120,
           sourceStart: range.start,
@@ -719,11 +721,11 @@ function getConversationFinalSnapshotTimeMs(
 function buildSnapshotFileName(value: string): string {
   const normalized = value
     .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[\\/:"*?<>|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  return `${normalized || "conversation-landscape-final"}.svg`;
+  return `${normalized || "conversation-landscape-final"}.png`;
 }
 
 function fileToObjectUrl(file: File): string {
@@ -760,6 +762,21 @@ function getProcessedTranscriptMediaSrc(job: JobSummary): string {
   }
 
   return buildJobMediaUrl(job.id);
+}
+
+function formatTranscriptCreatedAt(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function describeStreamStatus(streamSession: StreamSessionResponse | null, uploadProgress: number | null): string | null {
@@ -961,6 +978,7 @@ export function App() {
   const mediaElementRef = useRef<HTMLVideoElement | null>(null);
   const playbackFrameRef = useRef<number | null>(null);
   const landscapeRef = useRef<ConversationLandscapeHandle | null>(null);
+  const exportLandscapeRef = useRef<ConversationLandscapeHandle | null>(null);
 
   const refreshProcessedTranscriptOptions = async (): Promise<ProcessedTranscriptOption[]> => {
     const jobs = await fetchCompletedJobs();
@@ -970,6 +988,7 @@ export function App() {
         transcriptId: job.transcript_id ?? "",
         label: getProcessedTranscriptLabel(job),
         mediaSrc: getProcessedTranscriptMediaSrc(job),
+        createdAt: job.created_at,
         reviewStatus: job.review_status,
       }))
       .filter((option) => option.transcriptId);
@@ -1186,6 +1205,10 @@ export function App() {
   const activeUtterance = playbackStarted || landscapeTimeMs > 0 ? findActiveUtterance(utterances, landscapeTimeMs) : null;
   const activeSentence =
     document?.sentenceUnits.find((sentence) => sentence.id === activeUtterance?.id) ?? null;
+  const finalActiveUtterance =
+    playbackStarted || finalSnapshotTimeMs > 0 ? findActiveUtterance(utterances, finalSnapshotTimeMs) : null;
+  const finalActiveSentence =
+    document?.sentenceUnits.find((sentence) => sentence.id === finalActiveUtterance?.id) ?? null;
   const landscapeSpeakers = speakers.map((speaker, index) => ({
     id: speaker.id,
     label: speaker.label,
@@ -1194,9 +1217,32 @@ export function App() {
     totalDurationMs: speaker.totalDurationMs,
     averagePoliteness: speaker.averagePoliteness,
   }));
+  const finalLandscapeSpeakers = speakers.map((speaker, index) => ({
+    id: speaker.id,
+    label: speaker.label,
+    side: index % 2 === 0 ? ("left" as const) : ("right" as const),
+    opacity: finalActiveUtterance?.speakerId === speaker.id ? 1 : 0.5,
+    totalDurationMs: speaker.totalDurationMs,
+    averagePoliteness: speaker.averagePoliteness,
+  }));
   const activeUtterancePlaybackState = activeUtterance ? getUtterancePlaybackState(activeUtterance, landscapeTimeMs) : null;
+  const finalActiveUtterancePlaybackState = finalActiveUtterance
+    ? getUtterancePlaybackState(finalActiveUtterance, finalSnapshotTimeMs)
+    : null;
   const landscapeUtterances = utterances.map((utterance, index) => {
     const playbackState = getUtterancePlaybackState(utterance, landscapeTimeMs);
+
+    return {
+      id: utterance.id,
+      speakerId: utterance.speakerId,
+      politenessScore: utterance.politenessScore,
+      contourSignalCount: playbackState.contourSignalCount,
+      progress: playbackState.progress,
+      order: index,
+    };
+  });
+  const finalLandscapeUtterances = utterances.map((utterance, index) => {
+    const playbackState = getUtterancePlaybackState(utterance, finalSnapshotTimeMs);
 
     return {
       id: utterance.id,
@@ -1212,6 +1258,12 @@ export function App() {
     activeSentence?.analysis_result?.analysis_payload,
     activeUtterancePlaybackState?.visibleWordCount ?? 0,
     landscapeTimeMs,
+  );
+  const finalActiveTranscript = buildActiveTranscript(
+    finalActiveUtterance,
+    finalActiveSentence?.analysis_result?.analysis_payload,
+    finalActiveUtterancePlaybackState?.visibleWordCount ?? 0,
+    finalSnapshotTimeMs,
   );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -1477,14 +1529,14 @@ export function App() {
     setIsMediaMuted(mediaElementRef.current.muted);
   };
 
-  const handleDownloadSnapshot = () => {
-    if (!isPlaybackComplete) {
-      return;
-    }
-
-    landscapeRef.current?.downloadSnapshotSvg(
+  const handleDownloadSnapshot = async () => {
+    const didDownload = await exportLandscapeRef.current?.downloadSnapshotImage(
       buildSnapshotFileName(document?.conversationTitle || mediaName),
     );
+
+    if (!didDownload) {
+      setError("Failed to generate the final PNG snapshot.");
+    }
   };
 
   const renderCompactMediaControls = ({ minimal = false }: { minimal?: boolean } = {}) => {
@@ -1656,7 +1708,7 @@ export function App() {
                       onClick={() => void handleProcessedTranscriptSelect(option)}
                     >
                       <span className="transcript-option__title">{option.label}</span>
-                      {/* <span className="transcript-option__meta">{option.reviewStatus.replace("_", " ")}</span> */}
+                      <span className="transcript-option__date">{formatTranscriptCreatedAt(option.createdAt)}</span>
                     </button>
                   ))}
                 </div>
@@ -1802,14 +1854,6 @@ export function App() {
                 <div className="review-editor__footer-actions">
                   <button
                     type="button"
-                    className="ghost-button"
-                    onClick={() => void handleSaveReview("in_progress")}
-                    disabled={saveState === "saving" || !isReviewDirty}
-                  >
-                    Save Draft
-                  </button>
-                  <button
-                    type="button"
                     className="submit-upload"
                     onClick={() => void handleSaveReview("completed")}
                     disabled={saveState === "saving"}
@@ -1854,11 +1898,9 @@ export function App() {
                   <button type="button" className="ghost-button" onClick={() => setMode("review")}>
                     Edit Transcript
                   </button>
-                  {isPlaybackComplete ? (
-                    <button type="button" className="submit-upload" onClick={handleDownloadSnapshot}>
-                      Download Final SVG
-                    </button>
-                  ) : null}
+                  <button type="button" className="submit-upload" onClick={() => void handleDownloadSnapshot()}>
+                    Download Final PNG
+                  </button>
                 </div>
               </div>
               <div className="playback-header__transport">{renderCompactMediaControls({ minimal: true })}</div>
@@ -1883,6 +1925,20 @@ export function App() {
                 snapshotMode={isPlaybackComplete ? "final" : "live"}
               />
             )}
+            {transcriptLoadStatus !== "empty" && landscapeSpeakers.length > 0 ? (
+              <div className="conversation-landscape__export-proxy" aria-hidden="true">
+                <ConversationLandscape
+                  ref={exportLandscapeRef}
+                  speakers={finalLandscapeSpeakers}
+                  utterances={finalLandscapeUtterances}
+                  activeSpeakerId={finalActiveUtterance?.speakerId ?? null}
+                  activeTranscript={finalActiveTranscript}
+                  marginNotes={marginNotes}
+                  currentTimeMs={finalSnapshotTimeMs}
+                  snapshotMode="final"
+                />
+              </div>
+            ) : null}
           </section>
         </>
       ) : null}

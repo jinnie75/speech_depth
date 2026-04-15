@@ -39,6 +39,7 @@ export interface ConversationLandscapeTranscriptWordToken {
 export interface ConversationLandscapeMarginNote {
   id: string;
   text: string;
+  speakerId: string;
   utteranceId: string;
   appearAtMs: number;
   sourceStart: number;
@@ -67,7 +68,7 @@ interface ConversationLandscapeProps {
 }
 
 export interface ConversationLandscapeHandle {
-  downloadSnapshotSvg: (fileName?: string) => boolean;
+  downloadSnapshotImage: (fileName?: string) => Promise<boolean>;
 }
 
 interface Point {
@@ -88,10 +89,12 @@ interface SpeakerCluster {
 
 interface SpeakerSection {
   speaker: ConversationLandscapeSpeaker;
+  region: SpeakerRegion;
   color: string;
   outerColor: string;
   levelCount: number;
   washHref: string | null;
+  labelPoint: Point;
   paths: { level: number; d: string }[];
 }
 
@@ -107,12 +110,6 @@ interface LaunchPosition {
   top: number;
 }
 
-interface MarginNoteSlot {
-  leftPercent: number;
-  topPercent: number;
-  widthCh: number;
-}
-
 interface LandscapeSectionsCache {
   key: string;
   sectionsById: Map<string, SpeakerSection>;
@@ -122,7 +119,8 @@ interface VisibleMarginNote {
   note: ConversationLandscapeMarginNote;
   leftPercent: number;
   topPercent: number;
-  widthCh: number;
+  widthPx: number;
+  color: string;
 }
 
 interface FallingWordRenderState {
@@ -137,14 +135,27 @@ interface FallingWordRenderState {
   isSettled: boolean;
 }
 
-interface MarginNotesCache {
-  key: string;
-  visibleNotes: VisibleMarginNote[];
+interface CanvasTextStyle {
+  color: string;
+  font: string;
+  fontSizePx: number;
+  letterSpacingPx: number;
+  lineHeightPx: number;
+  opacity: number;
+}
+
+interface TextSegment {
+  opacity: number;
+  text: string;
 }
 
 const VIEWBOX_WIDTH = 1200;
 const VIEWBOX_HEIGHT = 620;
 const FALL_DISTANCE_Y = 248;
+const TRANSCRIPT_LABEL_FONT_FAMILY = '"Noto Serif SC", "Songti SC", "Source Han Serif SC", serif';
+const TRANSCRIPT_LABEL_FONT_SIZE = "0.72rem";
+const TRANSCRIPT_LABEL_FONT_WEIGHT = 500;
+const TRANSCRIPT_LABEL_LETTER_SPACING = "0.14em";
 const MAP_PADDING_X = 0;
 const MAP_PADDING_Y = 0;
 const MAP_WIDTH = VIEWBOX_WIDTH - MAP_PADDING_X * 2;
@@ -153,20 +164,8 @@ const GRID_ROWS = 112;
 const GRID_COLS = Math.max(156, Math.round((MAP_WIDTH / MAP_HEIGHT) * GRID_ROWS));
 const SPEAKER_COLORS = ["#0a8f87", "#8a4c1b", "#d26f1b", "#73586d"];
 const SPEAKER_OUTER_COLORS = ["#a7dbd6", "#d8b59b", "#f1c59f", "#c6b2c0"];
-const MARGIN_NOTE_SLOTS: MarginNoteSlot[] = [
-  { leftPercent: 8, topPercent: 61, widthCh: 18 },
-  { leftPercent: 28, topPercent: 64, widthCh: 16 },
-  { leftPercent: 49, topPercent: 60, widthCh: 20 },
-  { leftPercent: 71, topPercent: 66, widthCh: 15 },
-  { leftPercent: 15, topPercent: 73, widthCh: 17 },
-  { leftPercent: 37, topPercent: 76, widthCh: 18 },
-  { leftPercent: 59, topPercent: 72, widthCh: 16 },
-  { leftPercent: 79, topPercent: 78, widthCh: 15 },
-  { leftPercent: 7, topPercent: 84, widthCh: 16 },
-  { leftPercent: 30, topPercent: 89, widthCh: 17 },
-  { leftPercent: 55, topPercent: 86, widthCh: 18 },
-  { leftPercent: 74, topPercent: 91, widthCh: 16 },
-];
+const MARGIN_NOTE_SLOT_COLUMNS = [0.2, 0.5, 0.8];
+const MARGIN_NOTE_SLOT_ROWS = [0.62, 0.71, 0.8, 0.89];
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -200,6 +199,10 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function formatSpeakerLabelText(value: string): string {
+  return value.toUpperCase();
 }
 
 function hexToRgb(color: string): { r: number; g: number; b: number } {
@@ -357,54 +360,293 @@ function areLaunchPositionsEqual(
 function buildVisibleMarginNotes(
   marginNotes: ConversationLandscapeMarginNote[],
   currentTimeMs: number,
+  sectionsById: Map<string, SpeakerSection>,
 ): VisibleMarginNote[] {
   const revealedNotes = [...marginNotes]
     .filter((note) => currentTimeMs >= note.appearAtMs)
     .sort((left, right) => left.appearAtMs - right.appearAtMs || left.id.localeCompare(right.id));
-  const occupiedSlots = new Map<number, (typeof revealedNotes)[number]>();
-  const slotQueue: number[] = [];
+  const notesBySpeakerId = new Map<string, ConversationLandscapeMarginNote[]>();
 
   revealedNotes.forEach((note) => {
-    const preferredSlots = MARGIN_NOTE_SLOTS.map((_, slotIndex) => ({
-      slotIndex,
-      score: hashUnit(`${note.id}-slot-${slotIndex}`),
-    })).sort((left, right) => left.score - right.score);
+    const speakerNotes = notesBySpeakerId.get(note.speakerId);
+    if (speakerNotes) {
+      speakerNotes.push(note);
+      return;
+    }
 
-    const freeSlot = preferredSlots.find(({ slotIndex }) => !occupiedSlots.has(slotIndex));
-    const chosenSlotIndex =
-      freeSlot?.slotIndex ??
-      (() => {
-        const recycledSlotIndex = slotQueue.shift();
-        return recycledSlotIndex ?? 0;
-      })();
-
-    occupiedSlots.set(chosenSlotIndex, note);
-    slotQueue.push(chosenSlotIndex);
+    notesBySpeakerId.set(note.speakerId, [note]);
   });
 
-  return MARGIN_NOTE_SLOTS.map((slot, slotIndex) => {
-    const note = occupiedSlots.get(slotIndex);
-    if (!note) {
-      return null;
+  const visibleNotes: VisibleMarginNote[] = [];
+
+  notesBySpeakerId.forEach((speakerNotes, speakerId) => {
+    const section = sectionsById.get(speakerId);
+    if (!section) {
+      return;
+    }
+
+    const slotPositions = MARGIN_NOTE_SLOT_ROWS.flatMap((rowFraction) =>
+      MARGIN_NOTE_SLOT_COLUMNS.map((columnFraction) => ({
+        leftPercent: (lerp(section.region.startX, section.region.endX, columnFraction) / VIEWBOX_WIDTH) * 100,
+        topPercent: rowFraction * 100,
+        widthPx: clamp((section.region.endX - section.region.startX) * 0.24, 110, 190),
+      })),
+    );
+    const occupiedSlots = new Map<number, ConversationLandscapeMarginNote>();
+    const slotQueue: number[] = [];
+
+    speakerNotes.forEach((note) => {
+      const preferredSlots = slotPositions
+        .map((_, slotIndex) => ({
+          slotIndex,
+          score: hashUnit(`${note.id}-slot-${slotIndex}`),
+        }))
+        .sort((left, right) => left.score - right.score);
+      const freeSlot = preferredSlots.find(({ slotIndex }) => !occupiedSlots.has(slotIndex));
+      const chosenSlotIndex =
+        freeSlot?.slotIndex ??
+        (() => {
+          const recycledSlotIndex = slotQueue.shift();
+          return recycledSlotIndex ?? 0;
+        })();
+
+      occupiedSlots.set(chosenSlotIndex, note);
+      slotQueue.push(chosenSlotIndex);
+    });
+
+    slotPositions.forEach((slot, slotIndex) => {
+      const note = occupiedSlots.get(slotIndex);
+      if (!note) {
+        return;
+      }
+
+      visibleNotes.push({
+        note,
+        leftPercent: slot.leftPercent,
+        topPercent: slot.topPercent,
+        widthPx: slot.widthPx,
+        color: section.outerColor,
+      });
+    });
+  });
+
+  return visibleNotes.sort((left, right) => left.note.appearAtMs - right.note.appearAtMs || left.note.id.localeCompare(right.note.id));
+}
+
+function getSpeakerLabelPoint(
+  field: number[][],
+  maxFieldValue: number,
+  region: SpeakerRegion,
+): Point {
+  if (maxFieldValue <= 0.04) {
+    return {
+      x: region.midX,
+      y: VIEWBOX_HEIGHT * 0.52,
+    };
+  }
+
+  const threshold = maxFieldValue * 0.22;
+  let totalWeight = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+
+  for (let xIndex = 0; xIndex < GRID_COLS; xIndex += 1) {
+    for (let yIndex = 0; yIndex < GRID_ROWS; yIndex += 1) {
+      const value = field[xIndex][yIndex];
+      if (value < threshold) {
+        continue;
+      }
+
+      const weight = Math.pow(value / maxFieldValue, 1.15);
+      totalWeight += weight;
+      weightedX += gridX(xIndex) * weight;
+      weightedY += gridY(yIndex) * weight;
+    }
+  }
+
+  if (totalWeight <= 0) {
+    return {
+      x: region.midX,
+      y: VIEWBOX_HEIGHT * 0.52,
+    };
+  }
+
+  return {
+    x: clamp(weightedX / totalWeight, region.startX + 36, region.endX - 36),
+    y: clamp(weightedY / totalWeight, MAP_PADDING_Y + 150, VIEWBOX_HEIGHT - MAP_PADDING_Y - 88),
+  };
+}
+
+function loadImage(sourceUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Failed to load snapshot image."));
+    image.src = sourceUrl;
+  });
+}
+
+function parseCssLength(value: string | null | undefined, rootFontSizePx = 16): number {
+  if (!value) {
+    return 0;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.endsWith("px")) {
+    return Number.parseFloat(trimmed);
+  }
+  if (trimmed.endsWith("rem")) {
+    return Number.parseFloat(trimmed) * rootFontSizePx;
+  }
+  if (trimmed.endsWith("em")) {
+    return Number.parseFloat(trimmed) * rootFontSizePx;
+  }
+  const numeric = Number.parseFloat(trimmed);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function buildCanvasFont(style: CSSStyleDeclaration): string {
+  const fontStyle = style.fontStyle || "normal";
+  const fontVariant = style.fontVariant || "normal";
+  const fontWeight = style.fontWeight || "400";
+  const fontSize = style.fontSize || "16px";
+  const fontFamily = style.fontFamily || "sans-serif";
+  return `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize} ${fontFamily}`;
+}
+
+function getCanvasTextStyle(style: CSSStyleDeclaration): CanvasTextStyle {
+  const rootFontSizePx = parseCssLength(style.fontSize, 16) || 16;
+  const fontSizePx = parseCssLength(style.fontSize, 16) || 16;
+  const lineHeightPx = style.lineHeight === "normal"
+    ? fontSizePx * 1.2
+    : parseCssLength(style.lineHeight, rootFontSizePx) || fontSizePx * 1.2;
+
+  return {
+    color: style.color || "#17181c",
+    font: buildCanvasFont(style),
+    fontSizePx,
+    letterSpacingPx: parseCssLength(style.letterSpacing, rootFontSizePx),
+    lineHeightPx,
+    opacity: Number.parseFloat(style.opacity || "1") || 1,
+  };
+}
+
+function measureTextWidth(
+  context: CanvasRenderingContext2D,
+  text: string,
+  letterSpacingPx: number,
+): number {
+  if (text.length === 0) {
+    return 0;
+  }
+
+  return context.measureText(text).width + Math.max(text.length - 1, 0) * letterSpacingPx;
+}
+
+function drawTextWithLetterSpacing(
+  context: CanvasRenderingContext2D,
+  text: string,
+  startX: number,
+  baselineY: number,
+  letterSpacingPx: number,
+): void {
+  if (letterSpacingPx === 0 || text.length <= 1) {
+    context.fillText(text, startX, baselineY);
+    return;
+  }
+
+  let cursorX = startX;
+  for (const character of text) {
+    context.fillText(character, cursorX, baselineY);
+    cursorX += context.measureText(character).width + letterSpacingPx;
+  }
+}
+
+function segmentText(value: string): string[] {
+  return value.match(/\s+|\S+/g) ?? [];
+}
+
+function wrapTextSegments(
+  context: CanvasRenderingContext2D,
+  segments: TextSegment[],
+  maxWidth: number,
+  letterSpacingPx: number,
+): TextSegment[][] {
+  const lines: TextSegment[][] = [[]];
+  let currentLineWidth = 0;
+
+  segments.forEach((segment) => {
+    segmentText(segment.text).forEach((part) => {
+      const partWidth = measureTextWidth(context, part, letterSpacingPx);
+      const isWhitespace = /^\s+$/.test(part);
+
+      if (!isWhitespace && currentLineWidth > 0 && currentLineWidth + partWidth > maxWidth) {
+        lines.push([]);
+        currentLineWidth = 0;
+      }
+
+      if (isWhitespace && currentLineWidth === 0) {
+        return;
+      }
+
+      lines[lines.length - 1].push({ opacity: segment.opacity, text: part });
+      currentLineWidth += partWidth;
+    });
+  });
+
+  return lines.filter((line) => line.some((segment) => segment.text.trim().length > 0));
+}
+
+function drawWrappedTextSegments(
+  context: CanvasRenderingContext2D,
+  segments: TextSegment[],
+  left: number,
+  top: number,
+  maxWidth: number,
+  maxHeight: number,
+  textStyle: CanvasTextStyle,
+  align: "left" | "center" = "center",
+): void {
+  context.save();
+  context.font = textStyle.font;
+  context.textBaseline = "top";
+  const lines = wrapTextSegments(context, segments, maxWidth, textStyle.letterSpacingPx);
+  const maxLines = Math.max(1, Math.floor(maxHeight / textStyle.lineHeightPx));
+  const visibleLines = lines.slice(0, maxLines);
+
+  visibleLines.forEach((line, lineIndex) => {
+    const lineWidth = line.reduce((total, segment) => total + measureTextWidth(context, segment.text, textStyle.letterSpacingPx), 0);
+    let cursorX = align === "center" ? left + (maxWidth - lineWidth) * 0.5 : left;
+    const baselineY = top + lineIndex * textStyle.lineHeightPx;
+
+    line.forEach((segment) => {
+      context.fillStyle = textStyle.color;
+      context.globalAlpha = textStyle.opacity * segment.opacity;
+      drawTextWithLetterSpacing(context, segment.text, cursorX, baselineY, textStyle.letterSpacingPx);
+      cursorX += measureTextWidth(context, segment.text, textStyle.letterSpacingPx);
+    });
+  });
+
+  context.restore();
+}
+
+function buildTranscriptSegments(
+  tokens: ConversationLandscapeTranscriptToken[],
+  transcriptCurrentTimeMs: number,
+): TextSegment[] {
+  return tokens.map((token) => {
+    if (token.kind === "text") {
+      return {
+        opacity: 1,
+        text: token.text,
+      };
     }
 
     return {
-      note,
-      leftPercent: slot.leftPercent,
-      topPercent: slot.topPercent,
-      widthCh: slot.widthCh,
+      opacity: token.isHedge && transcriptCurrentTimeMs >= token.dropStartMs ? 0.28 : 1,
+      text: token.text,
     };
-  }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-}
-
-function getVisibleMarginNotesCacheKey(
-  marginNotes: ConversationLandscapeMarginNote[],
-  currentTimeMs: number,
-): string {
-  return marginNotes
-    .filter((note) => currentTimeMs >= note.appearAtMs)
-    .map((note) => note.id)
-    .join("|");
+  });
 }
 
 function buildFallingWordRenderStates(
@@ -684,14 +926,14 @@ function findAvailableSeedPoint(
       const candidate = {
         x: clamp(
           lerp(region.startX + 24, region.endX - 24, xAmount) +
-            hashSigned(`${utteranceId}-seed-x-${xIndex}-${verticalOffset}`) * Math.min((region.endX - region.startX) * 0.025, 10),
+          hashSigned(`${utteranceId}-seed-x-${xIndex}-${verticalOffset}`) * Math.min((region.endX - region.startX) * 0.025, 10),
           region.startX + 24,
           region.endX - 24,
         ),
         y: clamp(
           desiredY +
-            verticalOffset * MAP_HEIGHT +
-            hashSigned(`${utteranceId}-seed-y-${xIndex}-${verticalOffset}`) * 8,
+          verticalOffset * MAP_HEIGHT +
+          hashSigned(`${utteranceId}-seed-y-${xIndex}-${verticalOffset}`) * 8,
           MAP_PADDING_Y + 34,
           VIEWBOX_HEIGHT - MAP_PADDING_Y - 34,
         ),
@@ -1059,11 +1301,11 @@ function buildLandscapeSections(
       const wavePhase = hashUnit(`${speaker.id}-path`) * Math.PI * 2;
       const targetCenterY = clamp(
         MAP_PADDING_Y +
-          MAP_HEIGHT *
-            (0.5 +
-              Math.sin(spread * Math.PI * 1.15 + wavePhase) * 0.12 +
-              Math.cos(spread * Math.PI * 2.1 + wavePhase * 0.55) * 0.06 +
-              hashSigned(`${utterance.id}-y`) * 0.025),
+        MAP_HEIGHT *
+        (0.5 +
+          Math.sin(spread * Math.PI * 1.15 + wavePhase) * 0.12 +
+          Math.cos(spread * Math.PI * 2.1 + wavePhase * 0.55) * 0.06 +
+          hashSigned(`${utterance.id}-y`) * 0.025),
         MAP_PADDING_Y + 40,
         VIEWBOX_HEIGHT - MAP_PADDING_Y - 40,
       );
@@ -1152,15 +1394,17 @@ function buildLandscapeSections(
       progressedUtterances.length === 0 || maxFieldValue <= 0.04
         ? []
         : Array.from({ length: levelCount }, (_, levelIndex) =>
-            lerp(maxFieldValue * 0.08, maxFieldValue * 0.84, (levelIndex + 1) / (levelCount + 1)),
-          );
+          lerp(maxFieldValue * 0.08, maxFieldValue * 0.84, (levelIndex + 1) / (levelCount + 1)),
+        );
 
     sectionsById.set(speaker.id, {
       speaker,
+      region,
       color,
       outerColor,
       levelCount: levels.length,
       washHref: buildFieldWashDataUrl(separatedField, maxFieldValue, color, outerColor),
+      labelPoint: getSpeakerLabelPoint(separatedField, maxFieldValue, region),
       paths: levels
         .map((level) => ({
           level,
@@ -1203,7 +1447,6 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const wordRefs = useRef(new Map<string, HTMLSpanElement>());
   const sectionsCacheRef = useRef<LandscapeSectionsCache | null>(null);
-  const marginNotesCacheRef = useRef<MarginNotesCache | null>(null);
   const [wordPositions, setWordPositions] = useState<Record<string, WordPosition>>({});
   const [marginNoteLaunchPositions, setMarginNoteLaunchPositions] = useState<Record<string, LaunchPosition>>({});
   const sectionsCacheKey = getLandscapeSectionsCacheKey(speakers, utterances);
@@ -1227,14 +1470,7 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
     (token): token is ConversationLandscapeTranscriptWordToken => token.kind === "word",
   ) ?? [];
   const transcriptTokenLayoutKey = activeTranscript?.tokens.map((token) => token.id).join("|") ?? "";
-  const visibleMarginNotesCacheKey = getVisibleMarginNotesCacheKey(marginNotes, transcriptCurrentTimeMs);
-  if (!marginNotesCacheRef.current || marginNotesCacheRef.current.key !== visibleMarginNotesCacheKey) {
-    marginNotesCacheRef.current = {
-      key: visibleMarginNotesCacheKey,
-      visibleNotes: buildVisibleMarginNotes(marginNotes, transcriptCurrentTimeMs),
-    };
-  }
-  const visibleMarginNotes = marginNotesCacheRef.current.visibleNotes;
+  const visibleMarginNotes = buildVisibleMarginNotes(marginNotes, transcriptCurrentTimeMs, sectionsById);
   const fallingWords = buildFallingWordRenderStates(
     transcriptWordTokens,
     wordPositions,
@@ -1245,50 +1481,47 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   useImperativeHandle(
     ref,
     () => ({
-      downloadSnapshotSvg(fileName = "conversation-landscape-final.svg") {
-        if (typeof document === "undefined" || canvasWidth <= 0 || canvasHeight <= 0) {
+      async downloadSnapshotImage(fileName = "conversation-landscape-final.png") {
+        if (typeof document === "undefined" || canvasWidth <= 0 || canvasHeight <= 0 || !canvasRef.current) {
           return false;
+        }
+
+        if ("fonts" in document) {
+          await document.fonts.ready;
         }
 
         const scaleX = canvasWidth / VIEWBOX_WIDTH;
         const scaleY = canvasHeight / VIEWBOX_HEIGHT;
-        const transcriptMarkup = activeTranscript
-          ? `
-            <div style="position:absolute;top:0.55rem;left:50%;z-index:3;width:min(calc(100% - 2.2rem), 72ch);min-height:5.5rem;max-height:5.5rem;padding:0.95rem 1.1rem 0.55rem;overflow:hidden;transform:translateX(-50%);pointer-events:none;display:grid;gap:0.35rem;align-content:start;justify-items:center;text-align:center;color:${escapeXml(transcriptColor)};">
-              ${activeSection ? `<p style="margin:0;font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;letter-spacing:0.14em;text-transform:uppercase;font-size:0.72rem;">${escapeXml(activeSection.speaker.label)}</p>` : ""}
-              <p style="margin:0;max-width:70ch;font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;font-size:1.02rem;line-height:1.45;text-wrap:pretty;overflow:hidden;">
-                ${activeTranscript.tokens
-                  .map((token) => {
-                    if (token.kind === "text") {
-                      return `<span>${escapeXml(token.text)}</span>`;
-                    }
-
-                    const isDetached = token.isHedge && transcriptCurrentTimeMs >= token.dropStartMs;
-                    return `<span style="display:inline-block;opacity:${isDetached ? "0.28" : "1"};">${escapeXml(token.text)}</span>`;
-                  })
-                  .join("")}
-              </p>
-            </div>
-          `
+        const speakerLabelMarkup = snapshotMode === "final" && speakerSections.length > 1
+          ? speakerSections
+            .map(
+              ({ speaker, color, labelPoint }) => `
+                <g>
+                  <text
+                    x="${labelPoint.x}"
+                    y="${labelPoint.y}"
+                    fill="rgba(251, 247, 239, 0.9)"
+                    font-family="${escapeXml(TRANSCRIPT_LABEL_FONT_FAMILY)}"
+                    font-size="${TRANSCRIPT_LABEL_FONT_SIZE}"
+                    font-weight="${TRANSCRIPT_LABEL_FONT_WEIGHT}"
+                    text-anchor="middle"
+                    letter-spacing="${TRANSCRIPT_LABEL_LETTER_SPACING}"
+                  >${escapeXml(formatSpeakerLabelText(speaker.label))}</text>
+                  <text
+                    x="${labelPoint.x}"
+                    y="${labelPoint.y}"
+                    fill="${escapeXml(color)}"
+                    font-family="${escapeXml(TRANSCRIPT_LABEL_FONT_FAMILY)}"
+                    font-size="${TRANSCRIPT_LABEL_FONT_SIZE}"
+                    font-weight="${TRANSCRIPT_LABEL_FONT_WEIGHT}"
+                    text-anchor="middle"
+                    letter-spacing="${TRANSCRIPT_LABEL_LETTER_SPACING}"
+                  >${escapeXml(formatSpeakerLabelText(speaker.label))}</text>
+                </g>
+              `,
+            )
+            .join("")
           : "";
-        const marginNotesMarkup = visibleMarginNotes
-          .map(
-            ({ note, leftPercent, topPercent, widthCh }) => `
-              <p style="position:absolute;left:${leftPercent}%;top:${topPercent}%;margin:0;width:${widthCh * 1.5}ch;transform:translateX(-50%);color:rgba(22,22,22,0.58);font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;font-size:0.88rem;line-height:1.08;letter-spacing:0.01em;text-wrap:balance;text-align:center;opacity:0.72;">
-                ${escapeXml(note.text)}
-              </p>
-            `,
-          )
-          .join("");
-        const fallingWordsMarkup = fallingWords
-          .map(
-            ({ token, position, driftX, rotation, isSettled }) => `
-              <span style="position:absolute;left:${position.left + position.width * 0.5}px;top:${position.top}px;width:${Math.max(position.width, 1)}px;height:${Math.max(position.height, 1)}px;display:inline-flex;align-items:flex-start;justify-content:center;font-family:&quot;Noto Serif SC&quot;,&quot;Songti SC&quot;,&quot;Source Han Serif SC&quot;,serif;font-size:1.02rem;line-height:1.45;text-align:center;white-space:nowrap;color:${escapeXml(transcriptColor)};opacity:${isSettled ? "0.76" : "1"};transform-origin:50% 0%;transform:translate(-50%, 0) translate(${driftX}px, ${FALL_DISTANCE_Y}px) rotate(${rotation}deg);">
-                ${escapeXml(token.text)}
-              </span>
-            `,
-          )
-          .join("");
         const terrainMarkup = speakerSections
           .map(({ speaker, washHref, paths, color, outerColor }) => {
             const washMarkup = washHref
@@ -1309,24 +1542,147 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   <rect width="${canvasWidth}" height="${canvasHeight}" fill="#fbf7ef" />
   <g transform="scale(${scaleX} ${scaleY})">
     ${terrainMarkup}
+    ${speakerLabelMarkup}
   </g>
-  <foreignObject x="0" y="0" width="${canvasWidth}" height="${canvasHeight}">
-    <div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;width:${canvasWidth}px;height:${canvasHeight}px;">
-      ${transcriptMarkup}
-      ${marginNotesMarkup}
-      ${fallingWordsMarkup}
-    </div>
-  </foreignObject>
 </svg>`;
 
-        const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
-        const objectUrl = URL.createObjectURL(blob);
-        const downloadLink = document.createElement("a");
-        downloadLink.href = objectUrl;
-        downloadLink.download = fileName;
-        downloadLink.click();
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
-        return true;
+        const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+        const svgUrl = URL.createObjectURL(svgBlob);
+
+        try {
+          const snapshotImage = await loadImage(svgUrl);
+          const canvasRect = canvasRef.current.getBoundingClientRect();
+          const sectionElement = canvasRef.current.closest(".conversation-landscape");
+          const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+          const rasterCanvas = document.createElement("canvas");
+          rasterCanvas.width = Math.max(1, Math.round(canvasWidth * pixelRatio));
+          rasterCanvas.height = Math.max(1, Math.round(canvasHeight * pixelRatio));
+          const context = rasterCanvas.getContext("2d");
+
+          if (!context) {
+            return false;
+          }
+
+          context.scale(pixelRatio, pixelRatio);
+          context.fillStyle = "#fbf7ef";
+          context.fillRect(0, 0, canvasWidth, canvasHeight);
+          context.drawImage(snapshotImage, 0, 0, canvasWidth, canvasHeight);
+
+          if (sectionElement instanceof HTMLElement) {
+            const sectionStyle = window.getComputedStyle(sectionElement);
+            const borderWidth = parseCssLength(sectionStyle.borderTopWidth, 16);
+
+            if (borderWidth > 0) {
+              context.save();
+              context.strokeStyle = sectionStyle.borderTopColor || "rgba(23, 24, 28, 0.08)";
+              context.lineWidth = borderWidth;
+              context.strokeRect(borderWidth * 0.5, borderWidth * 0.5, canvasWidth - borderWidth, canvasHeight - borderWidth);
+              context.restore();
+            }
+          }
+
+          const transcriptLabelElement = canvasRef.current.querySelector(".conversation-landscape__transcript-label");
+          const transcriptCopyElement = canvasRef.current.querySelector(".conversation-landscape__transcript-copy");
+          const transcriptSegments = activeTranscript
+            ? buildTranscriptSegments(activeTranscript.tokens, transcriptCurrentTimeMs)
+            : [];
+
+          if (transcriptLabelElement instanceof HTMLElement && activeSection) {
+            const labelRect = transcriptLabelElement.getBoundingClientRect();
+            const labelStyle = getCanvasTextStyle(window.getComputedStyle(transcriptLabelElement));
+            const labelText = formatSpeakerLabelText(activeSection.speaker.label);
+            context.save();
+            context.font = labelStyle.font;
+            context.fillStyle = transcriptColor;
+            context.globalAlpha = labelStyle.opacity;
+            context.textAlign = "left";
+            context.textBaseline = "top";
+            drawTextWithLetterSpacing(
+              context,
+              labelText,
+              labelRect.left - canvasRect.left + labelRect.width * 0.5 - measureTextWidth(context, labelText, labelStyle.letterSpacingPx) * 0.5,
+              labelRect.top - canvasRect.top,
+              labelStyle.letterSpacingPx,
+            );
+            context.restore();
+          }
+
+          if (transcriptCopyElement instanceof HTMLElement && transcriptSegments.length > 0) {
+            const copyRect = transcriptCopyElement.getBoundingClientRect();
+            const copyStyle = getCanvasTextStyle(window.getComputedStyle(transcriptCopyElement));
+            copyStyle.color = transcriptColor;
+            drawWrappedTextSegments(
+              context,
+              transcriptSegments,
+              copyRect.left - canvasRect.left,
+              copyRect.top - canvasRect.top,
+              copyRect.width,
+              Math.max(copyRect.height, transcriptCopyElement.scrollHeight),
+              copyStyle,
+              "center",
+            );
+          }
+
+          const marginNoteElements = Array.from(canvasRef.current.querySelectorAll(".conversation-landscape__margin-note"));
+          marginNoteElements.forEach((element) => {
+            if (!(element instanceof HTMLElement)) {
+              return;
+            }
+
+            const noteRect = element.getBoundingClientRect();
+            const noteStyle = getCanvasTextStyle(window.getComputedStyle(element));
+            drawWrappedTextSegments(
+              context,
+              [{ opacity: 1, text: element.textContent ?? "" }],
+              noteRect.left - canvasRect.left,
+              noteRect.top - canvasRect.top,
+              noteRect.width,
+              Math.max(noteRect.height, element.scrollHeight),
+              noteStyle,
+              "center",
+            );
+          });
+
+          const fallingWordElement = canvasRef.current.querySelector(".conversation-landscape__falling-word");
+          const fallingWordStyle = fallingWordElement instanceof HTMLElement
+            ? getCanvasTextStyle(window.getComputedStyle(fallingWordElement))
+            : transcriptCopyElement instanceof HTMLElement
+              ? getCanvasTextStyle(window.getComputedStyle(transcriptCopyElement))
+              : null;
+
+          if (fallingWordStyle) {
+            fallingWords.forEach(({ token, position, driftX, rotation, isSettled }) => {
+              context.save();
+              context.font = fallingWordStyle.font;
+              context.fillStyle = transcriptColor;
+              context.globalAlpha = fallingWordStyle.opacity * (isSettled ? 0.76 : 1);
+              context.textAlign = "center";
+              context.textBaseline = "top";
+              context.translate(position.left + position.width * 0.5 + driftX, position.top + FALL_DISTANCE_Y);
+              context.rotate((rotation * Math.PI) / 180);
+              context.fillText(token.text, 0, 0);
+              context.restore();
+            });
+          }
+
+          const pngBlob = await new Promise<Blob | null>((resolve) => {
+            rasterCanvas.toBlob(resolve, "image/png");
+          });
+
+          if (!pngBlob) {
+            return false;
+          }
+
+          const downloadUrl = URL.createObjectURL(pngBlob);
+          const downloadLink = document.createElement("a");
+          downloadLink.href = downloadUrl;
+          downloadLink.download = fileName;
+          downloadLink.click();
+          window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
+          return true;
+        } finally {
+          URL.revokeObjectURL(svgUrl);
+        }
       },
     }),
     [
@@ -1418,6 +1774,7 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
         {activeTranscript ? (
           <div
             className={`conversation-landscape__transcript${activeSection?.speaker.side === "right" ? " conversation-landscape__transcript--right" : ""
+              }${snapshotMode === "final" ? " conversation-landscape__transcript--final" : ""
               }`}
             style={{ color: transcriptColor }}
             aria-live="polite"
@@ -1459,7 +1816,7 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
           </div>
         ) : null}
         <div className="conversation-landscape__margin-notes" aria-hidden="true">
-          {visibleMarginNotes.map(({ note, leftPercent, topPercent, widthCh }) => {
+          {visibleMarginNotes.map(({ note, leftPercent, topPercent, widthPx, color }) => {
             const launchPosition = marginNoteLaunchPositions[note.id];
             const slotLeft = (leftPercent / 100) * canvasWidth;
             const slotTop = (topPercent / 100) * canvasHeight;
@@ -1475,7 +1832,8 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
                 style={{
                   left: `${leftPercent}%`,
                   top: `${topPercent}%`,
-                  width: `${widthCh * 1.5}ch`,
+                  width: `${widthPx}px`,
+                  color,
                   animationDuration: `${settleDurationMs}ms`,
                   animationDelay: `${Math.max(-elapsedMs, -settleDurationMs)}ms`,
                   ["--margin-launch-x" as string]: `${launchDeltaX}px`,
@@ -1557,6 +1915,36 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
               ))}
             </g>
           ))}
+          {snapshotMode === "final" && speakerSections.length > 1
+            ? speakerSections.map(({ speaker, color, labelPoint }) => (
+              <g key={`${speaker.id}-label`}>
+                <text
+                  x={labelPoint.x}
+                  y={labelPoint.y}
+                  fill="rgba(251, 247, 239, 0.9)"
+                  fontFamily={TRANSCRIPT_LABEL_FONT_FAMILY}
+                  fontSize={TRANSCRIPT_LABEL_FONT_SIZE}
+                  fontWeight={TRANSCRIPT_LABEL_FONT_WEIGHT}
+                  letterSpacing={TRANSCRIPT_LABEL_LETTER_SPACING}
+                  textAnchor="middle"
+                >
+                  {formatSpeakerLabelText(speaker.label)}
+                </text>
+                <text
+                  x={labelPoint.x}
+                  y={labelPoint.y}
+                  fill={color}
+                  fontFamily={TRANSCRIPT_LABEL_FONT_FAMILY}
+                  fontSize={TRANSCRIPT_LABEL_FONT_SIZE}
+                  fontWeight={TRANSCRIPT_LABEL_FONT_WEIGHT}
+                  letterSpacing={TRANSCRIPT_LABEL_LETTER_SPACING}
+                  textAnchor="middle"
+                >
+                  {formatSpeakerLabelText(speaker.label)}
+                </text>
+              </g>
+            ))
+            : null}
         </svg>
       </div>
     </section>
