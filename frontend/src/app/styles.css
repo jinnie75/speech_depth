@@ -16,9 +16,6 @@
   --landscape-transcript-height: clamp(5.5rem, 10vw, 7rem);
   font-family: var(--ui-font);
   color: var(--ink);
-  /* background:
-    radial-gradient(circle at top, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0) 34%),
-    linear-gradient(180deg, #fcfaf6 0%, var(--paper) 56%, var(--paper-shadow) 100%); */
 }
 
 * {
@@ -590,27 +587,45 @@ button {
 
 .review-toolbar {
   display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: end;
-  padding: 1rem 1.1rem;
+  gap: 1.5rem;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  padding: 0;
   margin-bottom: 1.25rem;
-  border: 1px solid var(--line);
-  background: rgba(247, 242, 234, 0.95);
-  backdrop-filter: blur(14px);
 }
 
 .review-toolbar__title {
-  display: grid;
-  gap: 0.45rem;
-  flex: 1 1 auto;
+  display: block;
+  flex: 0 0 50%;
+  max-width: 50%;
+  min-width: 0;
 }
 
 .review-toolbar .title-input {
-  min-width: min(100%, 56rem);
+  width: 100%;
+  min-width: 0;
 }
 
-.review-toolbar__actions,
+.review-toolbar__actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: flex-end;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+.review-toolbar__actions > * {
+  flex: 0 0 auto;
+}
+
+.review-toolbar__actions .ghost-button,
+.review-toolbar__actions .submit-upload {
+  width: auto;
+}
+
 .playback-header__actions {
   display: flex;
   flex-wrap: wrap;
@@ -622,6 +637,11 @@ button {
 .save-indicator {
   color: var(--muted);
   font-size: 0.92rem;
+}
+
+.review-header-card {
+  display: grid;
+  gap: 1rem;
 }
 
 .review-media {
@@ -1025,13 +1045,11 @@ button {
   .select-layout,
   .review-top-stack,
   .review-editor-shell,
-  .playback-header,
-  .review-toolbar {
+  .playback-header {
     grid-template-columns: 1fr;
     display: grid;
   }
 
-  .review-toolbar,
   .playback-header {
     align-items: start;
   }

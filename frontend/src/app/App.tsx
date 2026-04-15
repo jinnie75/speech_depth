@@ -1669,42 +1669,42 @@ export function App() {
       {mode === "review" && document && reviewDraft ? (
         <>
           <section className="review-top-stack">
-            <section className="review-toolbar">
-              <div className="review-toolbar__title">
-                <input
-                  className="title-input"
-                  value={reviewDraft.conversationTitle}
-                  onChange={(event) => updateDraftTitle(event.target.value)}
-                  placeholder="Name of the conversation"
-                />
-              </div>
-              <div className="review-toolbar__actions">
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => setIsDeleteConfirmOpen(true)}
-                  disabled={saveState === "saving"}
-                >
-                  Delete Transcript
-                </button>
-                <button type="button" className="ghost-button" onClick={() => setMode("select")}>
-                  Back to Files
-                </button>
-                <button
-                  type="button"
-                  className="submit-upload"
-                  onClick={() => void handleSaveReview("completed")}
-                  disabled={saveState === "saving"}
-                >
-                  Save and Continue
-                </button>
-              </div>
-            </section>
+            <article className="surface-card review-media review-header-card">
+              <section className="review-toolbar">
+                <div className="review-toolbar__title">
+                  <input
+                    className="title-input"
+                    value={reviewDraft.conversationTitle}
+                    onChange={(event) => updateDraftTitle(event.target.value)}
+                    placeholder="Name of the conversation"
+                  />
+                </div>
+                <div className="review-toolbar__actions">
+                  <button type="button" className="ghost-button" onClick={() => setMode("select")}>
+                    Back to Files
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => setIsDeleteConfirmOpen(true)}
+                    disabled={saveState === "saving"}
+                  >
+                    Delete Transcript
+                  </button>
+                  <button
+                    type="button"
+                    className="submit-upload"
+                    onClick={() => void handleSaveReview("completed")}
+                    disabled={saveState === "saving"}
+                  >
+                    Save and Continue
+                  </button>
+                </div>
+              </section>
 
-            <article className="surface-card review-media">
               <div className="section-heading">
                 <div>
-                  <h2>{mediaName}</h2>
+                  <h2>{reviewDraft.conversationTitle.trim() || mediaName}</h2>
                 </div>
               </div>
               {renderCompactMediaControls()}
@@ -1851,11 +1851,11 @@ export function App() {
                   <button type="button" className="ghost-button" onClick={() => setMode("select")}>
                     Back to Files
                   </button>
-                  <button type="button" className="submit-upload" onClick={() => setMode("review")}>
+                  <button type="button" className="ghost-button" onClick={() => setMode("review")}>
                     Edit Transcript
                   </button>
                   {isPlaybackComplete ? (
-                    <button type="button" className="ghost-button" onClick={handleDownloadSnapshot}>
+                    <button type="button" className="submit-upload" onClick={handleDownloadSnapshot}>
                       Download Final SVG
                     </button>
                   ) : null}
