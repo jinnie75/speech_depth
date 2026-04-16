@@ -2563,7 +2563,9 @@ export function App() {
         <section className="archive-shell">
           <header className="archive-header">
             <div className="archive-header__copy">
-              <h1>OF TERRAINS WE SPEAK</h1>
+              <button type="button" className="site-title-button" onClick={() => setMode("select")}>
+                <h1>OF TERRAINS WE SPEAK</h1>
+              </button>
             </div>
             <div className="archive-header__actions">
               <button type="button" className="submit-upload" onClick={() => setMode("create")}>
@@ -2629,7 +2631,9 @@ export function App() {
           <header className="create-shell__hero">
             <div className="create-shell__hero-row">
               <div className="create-shell__copy">
-                <h1>OF TERRAINS WE SPEAK</h1>
+                <button type="button" className="site-title-button" onClick={() => setMode("select")}>
+                  <h1>OF TERRAINS WE SPEAK</h1>
+                </button>
               </div>
               <div className="create-shell__actions">
                 <button type="button" className="submit-upload" onClick={() => setMode("select")}>
@@ -2747,7 +2751,9 @@ export function App() {
       {mode === "about" ? (
         <section className="about-shell">
           <header className="about-shell__header">
-            <h1>OF TERRAINS WE SPEAK</h1>
+            <button type="button" className="site-title-button" onClick={() => setMode("select")}>
+              <h1>OF TERRAINS WE SPEAK</h1>
+            </button>
             <div className="about-shell__actions">
               <button type="button" className="submit-upload" onClick={() => setMode("select")}>
                 Back to Main

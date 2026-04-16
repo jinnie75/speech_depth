@@ -194,6 +194,19 @@ button {
   cursor: pointer;
 }
 
+.site-title-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: inherit;
+}
+
+.site-title-button h1 {
+  margin: 0;
+}
+
 .create-shell__hero {
   display: grid;
   gap: 1rem;
