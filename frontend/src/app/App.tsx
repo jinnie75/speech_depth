@@ -9,18 +9,28 @@ import type {
   ConversationLandscapeTranscriptToken,
 } from "../components/ConversationLandscape";
 import {
+  appendLiveSessionEvent,
   buildJobMediaUrl,
+  createLiveSession,
   createStreamSession,
   deleteTranscript,
   fetchCompletedJobs,
+  finalizeLiveSession,
+  fetchLiveSession,
   fetchStreamSession,
   finalizeStreamSession,
   loadPlaybackDocument,
   saveTranscriptReview,
+  stopLiveSession,
+  uploadChunkToLiveSession,
   uploadFileToStreamSession,
 } from "../lib/api";
 import type {
+  AppendLiveTranscriptEventRequest,
+  ArchivePreviewResponse,
   JobSummary,
+  LiveAnalysisEventRequest,
+  LiveSessionResponse,
   PlaybackDocument,
   ReviewStatus,
   SentenceUnitResponse,
@@ -37,9 +47,71 @@ const FALLBACK_SPEAKER_LABEL = "Speaker";
 const PRELOAD_TRANSCRIPT_ID = DEFAULT_MEDIA_SRC ? TRANSCRIPT_ID : undefined;
 const DEFAULT_SPEAKER_COUNT = 2;
 const SPEAKER_COUNT_OPTIONS: SpeakerCount[] = [1, 2, 3];
+const LIVE_CAPTURE_TIMESLICE_MS = 1200;
+const ARCHIVE_PAGE_SIZE = 12;
+const ARCHIVE_PREVIEW_BATCH_SIZE = 4;
+const LIVE_HEDGE_PHRASES = [
+  "i think",
+  "maybe",
+  "probably",
+  "perhaps",
+  "kind of",
+  "sort of",
+  "i guess",
+  "i feel like",
+  "might",
+  "could",
+];
+const LIVE_SUBSTANCE_PHRASES = [
+  "i need",
+  "i want",
+  "i feel",
+  "i'm feeling",
+  "i am feeling",
+  "i'm worried",
+  "i am worried",
+  "i'm upset",
+  "i am upset",
+  "i'm frustrated",
+  "i am frustrated",
+  "i'm afraid",
+  "i am afraid",
+  "help",
+];
 
 type SpeakerCount = 1 | 2 | 3;
-type AppMode = "select" | "review" | "playback";
+type AppMode = "select" | "create" | "about" | "live" | "review" | "playback";
+
+type LiveCaptureState = "idle" | "starting" | "recording" | "stopping" | "finalizing";
+
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  0: SpeechRecognitionAlternativeLike;
+}
+
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLike>;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+interface SpeechRecognitionConstructorLike {
+  new(): SpeechRecognitionLike;
+}
 
 interface SpeakerSummary {
   id: string;
@@ -92,6 +164,7 @@ interface ProcessedTranscriptOption {
   mediaSrc: string;
   createdAt: string;
   reviewStatus: ReviewStatus;
+  archivePreview: ArchivePreviewData | null;
 }
 
 interface ReviewSentenceDraft {
@@ -104,6 +177,45 @@ interface ReviewDraft {
   conversationTitle: string;
   speakerLabels: Record<string, string>;
   sentences: Record<string, ReviewSentenceDraft>;
+}
+
+interface LiveTranscriptEntry {
+  utteranceKey: string;
+  text: string;
+  startMs: number;
+  endMs: number;
+  isFinal: boolean;
+  analysis: LiveAnalysisEventRequest | null;
+}
+
+interface ArchivePreviewData {
+  speakers: Array<{
+    id: string;
+    label: string;
+    side: "left" | "right";
+    opacity: number;
+    totalDurationMs: number;
+    averagePoliteness: number;
+  }>;
+  utterances: Array<{
+    id: string;
+    speakerId: string;
+    politenessScore: number;
+    contourSignalCount: number;
+    progress: number;
+    order: number;
+  }>;
+  activeSpeakerId: string | null;
+  activeTranscript: ConversationLandscapeTranscript | null;
+  marginNotes: ConversationLandscapeMarginNote[];
+  currentTimeMs: number;
+}
+
+interface ArchivePreviewCardProps {
+  isActive: boolean;
+  option: ProcessedTranscriptOption;
+  preview: ArchivePreviewData | null | undefined;
+  onSelect: (option: ProcessedTranscriptOption) => void;
 }
 
 function PlayIcon() {
@@ -146,6 +258,88 @@ function MuteIcon() {
   );
 }
 
+function ArchivePreviewCard({ isActive, option, preview, onSelect }: ArchivePreviewCardProps) {
+  const cardRef = useRef<HTMLButtonElement | null>(null);
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    if (isVisible) {
+      return;
+    }
+
+    const cardNode = cardRef.current;
+    if (!cardNode) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "240px" },
+    );
+
+    observer.observe(cardNode);
+    return () => {
+      observer.disconnect();
+    };
+  }, [isVisible]);
+
+  return (
+    <button
+      ref={cardRef}
+      type="button"
+      className={`archive-card${isActive ? " archive-card--active" : ""}`}
+      onClick={() => onSelect(option)}
+    >
+      <div className="archive-card__meta">
+        <span className="archive-card__title">{option.label}</span>
+        <span className="archive-card__date">{formatTranscriptCreatedAt(option.createdAt)}</span>
+      </div>
+      <div className="archive-card__preview">
+        {preview ? (
+          isVisible ? (
+            <div className="archive-card__preview-frame" aria-hidden="true">
+              <div className="archive-card__preview-landscape">
+                <ConversationLandscape
+                  speakers={preview.speakers}
+                  utterances={preview.utterances}
+                  activeSpeakerId={preview.activeSpeakerId}
+                  activeTranscript={preview.activeTranscript}
+                  marginNotes={preview.marginNotes}
+                  currentTimeMs={preview.currentTimeMs}
+                  snapshotMode="final"
+                  staticPreview
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="archive-card__placeholder">
+              <p>Preview ready.</p>
+            </div>
+          )
+        ) : preview === null ? (
+          <div className="archive-card__placeholder">
+            <p>Final image unavailable.</p>
+          </div>
+        ) : (
+          <div className="archive-card__placeholder">
+            <p>Preparing final image...</p>
+          </div>
+        )}
+      </div>
+    </button>
+  );
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -176,6 +370,68 @@ function formatTimestamp(totalMs: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function deserializeArchivePreview(preview: ArchivePreviewResponse | null | undefined): ArchivePreviewData | null {
+  if (!preview) {
+    return null;
+  }
+
+  return {
+    speakers: preview.speakers.map((speaker) => ({
+      id: speaker.id,
+      label: speaker.label,
+      side: speaker.side,
+      opacity: speaker.opacity,
+      totalDurationMs: speaker.total_duration_ms,
+      averagePoliteness: speaker.average_politeness,
+    })),
+    utterances: preview.utterances.map((utterance) => ({
+      id: utterance.id,
+      speakerId: utterance.speaker_id,
+      politenessScore: utterance.politeness_score,
+      contourSignalCount: utterance.contour_signal_count,
+      progress: utterance.progress,
+      order: utterance.order,
+    })),
+    activeSpeakerId: preview.active_speaker_id,
+    activeTranscript: preview.active_transcript
+      ? {
+        utteranceId: preview.active_transcript.utterance_id,
+        currentTimeMs: preview.active_transcript.current_time_ms,
+        tokens: preview.active_transcript.tokens.map((token) =>
+          token.kind === "word"
+            ? {
+              id: token.id,
+              kind: "word",
+              text: token.text,
+              start: token.start ?? 0,
+              end: token.end ?? token.text.length,
+              isHedge: !!token.is_hedge,
+              isSubstance: !!token.is_substance,
+              dropStartMs: token.drop_start_ms ?? 0,
+              dropDurationMs: token.drop_duration_ms ?? 0,
+            }
+            : {
+              id: token.id,
+              kind: "text",
+              text: token.text,
+            },
+        ),
+      }
+      : null,
+    marginNotes: preview.margin_notes.map((note) => ({
+      id: note.id,
+      text: note.text,
+      speakerId: note.speaker_id,
+      utteranceId: note.utterance_id,
+      appearAtMs: note.appear_at_ms,
+      sourceStart: note.source_start,
+      sourceEnd: note.source_end,
+      settleDurationMs: note.settle_duration_ms,
+    })),
+    currentTimeMs: preview.current_time_ms,
+  };
 }
 
 function extractAnalysisMatches(value: unknown): string[] {
@@ -728,6 +984,46 @@ function buildSnapshotFileName(value: string): string {
   return `${normalized || "conversation-landscape-final"}.png`;
 }
 
+function buildProcessedTranscriptOptions(jobs: JobSummary[]): ProcessedTranscriptOption[] {
+  return jobs
+    .map((job) => ({
+      jobId: job.id,
+      transcriptId: job.transcript_id ?? "",
+      label: getProcessedTranscriptLabel(job),
+      mediaSrc: getProcessedTranscriptMediaSrc(job),
+      createdAt: job.created_at,
+      reviewStatus: job.review_status,
+      archivePreview: deserializeArchivePreview(job.archive_preview),
+    }))
+    .filter((option) => option.transcriptId)
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.createdAt);
+      const rightTime = Date.parse(right.createdAt);
+      return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+    });
+}
+
+function mergeProcessedTranscriptOptions(
+  currentOptions: ProcessedTranscriptOption[],
+  incomingOptions: ProcessedTranscriptOption[],
+): ProcessedTranscriptOption[] {
+  const byTranscriptId = new Map<string, ProcessedTranscriptOption>();
+
+  currentOptions.forEach((option) => {
+    byTranscriptId.set(option.transcriptId, option);
+  });
+
+  incomingOptions.forEach((option) => {
+    byTranscriptId.set(option.transcriptId, option);
+  });
+
+  return Array.from(byTranscriptId.values()).sort((left, right) => {
+    const leftTime = Date.parse(left.createdAt);
+    const rightTime = Date.parse(right.createdAt);
+    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+  });
+}
+
 function fileToObjectUrl(file: File): string {
   return URL.createObjectURL(file);
 }
@@ -777,6 +1073,56 @@ function formatTranscriptCreatedAt(value: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function buildArchivePreviewData(document: PlaybackDocument): ArchivePreviewData | null {
+  const utterances = buildUtterances(document);
+  const speakers = buildSpeakerSummaries(utterances, document.speakerLabels ?? {});
+
+  if (speakers.length === 0 || utterances.length === 0) {
+    return null;
+  }
+
+  const marginNotes = buildMarginNotes(utterances);
+  const finalSnapshotTimeMs = getConversationFinalSnapshotTimeMs(utterances, marginNotes, 0);
+  const finalActiveUtterance = findActiveUtterance(utterances, finalSnapshotTimeMs);
+  const finalActiveSentence =
+    document.sentenceUnits.find((sentence) => sentence.id === finalActiveUtterance?.id) ?? null;
+  const finalActiveUtterancePlaybackState = finalActiveUtterance
+    ? getUtterancePlaybackState(finalActiveUtterance, finalSnapshotTimeMs)
+    : null;
+
+  return {
+    speakers: speakers.map((speaker, index) => ({
+      id: speaker.id,
+      label: speaker.label,
+      side: index % 2 === 0 ? ("left" as const) : ("right" as const),
+      opacity: finalActiveUtterance?.speakerId === speaker.id ? 1 : 0.5,
+      totalDurationMs: speaker.totalDurationMs,
+      averagePoliteness: speaker.averagePoliteness,
+    })),
+    utterances: utterances.map((utterance, index) => {
+      const playbackState = getUtterancePlaybackState(utterance, finalSnapshotTimeMs);
+
+      return {
+        id: utterance.id,
+        speakerId: utterance.speakerId,
+        politenessScore: utterance.politenessScore,
+        contourSignalCount: playbackState.contourSignalCount,
+        progress: playbackState.progress,
+        order: index,
+      };
+    }),
+    activeSpeakerId: finalActiveUtterance?.speakerId ?? null,
+    activeTranscript: buildActiveTranscript(
+      finalActiveUtterance,
+      finalActiveSentence?.analysis_result?.analysis_payload,
+      finalActiveUtterancePlaybackState?.visibleWordCount ?? 0,
+      finalSnapshotTimeMs,
+    ),
+    marginNotes,
+    currentTimeMs: finalSnapshotTimeMs,
+  };
 }
 
 function describeStreamStatus(streamSession: StreamSessionResponse | null, uploadProgress: number | null): string | null {
@@ -950,6 +1296,90 @@ function buildReviewPayload(document: PlaybackDocument, draft: ReviewDraft, revi
   };
 }
 
+function getSpeechRecognitionConstructor(): SpeechRecognitionConstructorLike | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const recognitionWindow = window as Window & {
+    SpeechRecognition?: SpeechRecognitionConstructorLike;
+    webkitSpeechRecognition?: SpeechRecognitionConstructorLike;
+  };
+  return recognitionWindow.SpeechRecognition ?? recognitionWindow.webkitSpeechRecognition ?? null;
+}
+
+function isLiveCaptureSupported(): boolean {
+  return typeof window !== "undefined" && typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+}
+
+function isLiveTranscriptionSupported(): boolean {
+  return getSpeechRecognitionConstructor() !== null;
+}
+
+function getPreferredLiveMimeType(): string {
+  if (typeof MediaRecorder === "undefined") {
+    return "audio/webm";
+  }
+  if (typeof MediaRecorder.isTypeSupported !== "function") {
+    return "audio/webm";
+  }
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  return candidates.find((value) => MediaRecorder.isTypeSupported(value)) ?? "audio/webm";
+}
+
+function buildLiveAnalysis(text: string): LiveAnalysisEventRequest {
+  const normalized = text.toLowerCase();
+  const hedgingMatches = LIVE_HEDGE_PHRASES.filter((phrase) => normalized.includes(phrase));
+  const substanceMatches = LIVE_SUBSTANCE_PHRASES.filter((phrase) => normalized.includes(phrase));
+
+  const politenessBase = hedgingMatches.length > 0 ? 0.68 : 0.52;
+  const semanticConfidenceBase = substanceMatches.length > 0 ? 0.76 : 0.58;
+  const mainMessageBase = text.trim().length > 32 ? 0.74 : 0.56;
+
+  return {
+    politeness_score: clamp(politenessBase + hedgingMatches.length * 0.05, 0, 1),
+    semantic_confidence_score: clamp(semanticConfidenceBase + substanceMatches.length * 0.06, 0, 1),
+    main_message_likelihood: clamp(mainMessageBase, 0, 1),
+    analysis_model: "live-heuristic:mvp-client",
+    analysis_payload: {
+      hedging: { matches: hedgingMatches },
+      substance: { matches: substanceMatches },
+    },
+  };
+}
+
+function upsertLiveTranscriptEntry(
+  entries: LiveTranscriptEntry[],
+  nextEntry: LiveTranscriptEntry,
+): LiveTranscriptEntry[] {
+  const existingIndex = entries.findIndex((entry) => entry.utteranceKey === nextEntry.utteranceKey);
+  if (existingIndex === -1) {
+    return [...entries, nextEntry].sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+  }
+
+  const updatedEntries = [...entries];
+  updatedEntries[existingIndex] = {
+    ...updatedEntries[existingIndex],
+    ...nextEntry,
+  };
+  return updatedEntries.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+}
+
+function formatLiveCaptureState(state: LiveCaptureState, session: LiveSessionResponse | null): string {
+  if (state === "starting") {
+    return "Starting microphone and live session";
+  }
+  if (state === "recording") {
+    return session?.received_chunks ? `Recording live · ${session.received_chunks} chunks saved` : "Recording live";
+  }
+  if (state === "stopping") {
+    return "Stopping capture and flushing transcript";
+  }
+  if (state === "finalizing") {
+    return "Finalizing live session";
+  }
+  return "Ready";
+}
+
 export function App() {
   const [mode, setMode] = useState<AppMode>("select");
   const [document, setDocument] = useState<PlaybackDocument | null>(null);
@@ -961,11 +1391,20 @@ export function App() {
   const [playbackStarted, setPlaybackStarted] = useState(false);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [streamSession, setStreamSession] = useState<StreamSessionResponse | null>(null);
+  const [liveSession, setLiveSession] = useState<LiveSessionResponse | null>(null);
+  const [liveCaptureState, setLiveCaptureState] = useState<LiveCaptureState>("idle");
+  const [liveTranscriptEntries, setLiveTranscriptEntries] = useState<LiveTranscriptEntry[]>([]);
+  const [liveNotice, setLiveNotice] = useState<string | null>(null);
+  const [liveManualText, setLiveManualText] = useState("");
+  const [isSavingLiveManualText, setIsSavingLiveManualText] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [speakerCount, setSpeakerCount] = useState<SpeakerCount>(DEFAULT_SPEAKER_COUNT);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [processedTranscriptOptions, setProcessedTranscriptOptions] = useState<ProcessedTranscriptOption[]>([]);
+  const [archiveTotalCount, setArchiveTotalCount] = useState(0);
+  const [isArchivePageLoading, setIsArchivePageLoading] = useState(false);
+  const [archivePreviews, setArchivePreviews] = useState<Record<string, ArchivePreviewData | null>>({});
   const [selectedProcessedTranscriptId, setSelectedProcessedTranscriptId] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [mediaDurationMs, setMediaDurationMs] = useState(0);
@@ -977,23 +1416,57 @@ export function App() {
   const pollingSessionIdRef = useRef<string | null>(null);
   const mediaElementRef = useRef<HTMLVideoElement | null>(null);
   const playbackFrameRef = useRef<number | null>(null);
+  const liveMediaStreamRef = useRef<MediaStream | null>(null);
+  const liveMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const liveRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const liveChunkIndexRef = useRef(0);
+  const liveStartedAtRef = useRef<number | null>(null);
+  const liveTranscriptDraftsRef = useRef<Record<string, { startMs: number; text: string; isFinal: boolean }>>({});
+  const liveStopRequestedRef = useRef(false);
+  const liveCaptureStateRef = useRef<LiveCaptureState>("idle");
+  const liveLocalChunksRef = useRef<Blob[]>([]);
+  const liveUploadQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const liveRecognitionRestartEnabledRef = useRef(false);
   const landscapeRef = useRef<ConversationLandscapeHandle | null>(null);
   const exportLandscapeRef = useRef<ConversationLandscapeHandle | null>(null);
 
-  const refreshProcessedTranscriptOptions = async (): Promise<ProcessedTranscriptOption[]> => {
-    const jobs = await fetchCompletedJobs();
-    const options = jobs
-      .map((job) => ({
-        jobId: job.id,
-        transcriptId: job.transcript_id ?? "",
-        label: getProcessedTranscriptLabel(job),
-        mediaSrc: getProcessedTranscriptMediaSrc(job),
-        createdAt: job.created_at,
-        reviewStatus: job.review_status,
-      }))
-      .filter((option) => option.transcriptId);
-    setProcessedTranscriptOptions(options);
-    return options;
+  const refreshProcessedTranscriptOptions = async ({
+    reset = false,
+  }: {
+    reset?: boolean;
+  } = {}): Promise<ProcessedTranscriptOption[]> => {
+    const offset = reset ? 0 : processedTranscriptOptions.length;
+    const existingOptions = reset ? [] : processedTranscriptOptions;
+
+    setIsArchivePageLoading(true);
+    try {
+      const jobPage = await fetchCompletedJobs(ARCHIVE_PAGE_SIZE, offset);
+      const incomingOptions = buildProcessedTranscriptOptions(jobPage.jobs);
+      const nextOptions = reset
+        ? incomingOptions
+        : mergeProcessedTranscriptOptions(existingOptions, incomingOptions);
+
+      setArchiveTotalCount(jobPage.total);
+      setProcessedTranscriptOptions(nextOptions);
+      setArchivePreviews((currentPreviews) => {
+        const validTranscriptIds = new Set(nextOptions.map((option) => option.transcriptId));
+        const retainedPreviews = Object.fromEntries(
+          Object.entries(currentPreviews).filter(([transcriptId]) => validTranscriptIds.has(transcriptId)),
+        );
+        const previewsFromJobs = Object.fromEntries(
+          nextOptions
+            .filter((option) => option.archivePreview !== null)
+            .map((option) => [option.transcriptId, option.archivePreview] as const),
+        );
+        return {
+          ...retainedPreviews,
+          ...previewsFromJobs,
+        };
+      });
+      return nextOptions;
+    } finally {
+      setIsArchivePageLoading(false);
+    }
   };
 
   const loadTranscriptIntoApp = async ({
@@ -1012,6 +1485,10 @@ export function App() {
     setTranscriptLoadStatus("loading");
     const payload = await loadPlaybackDocument(transcriptId);
     setDocument(payload);
+    setArchivePreviews((currentPreviews) => ({
+      ...currentPreviews,
+      [transcriptId]: buildArchivePreviewData(payload),
+    }));
     setMediaSrc(mediaSource);
     setMediaName(mediaLabel);
     setSelectedProcessedTranscriptId(selectedTranscriptId);
@@ -1029,7 +1506,7 @@ export function App() {
   useEffect(() => {
     let active = true;
 
-    refreshProcessedTranscriptOptions()
+    refreshProcessedTranscriptOptions({ reset: true })
       .then(async (options) => {
         if (!PRELOAD_TRANSCRIPT_ID || !active) {
           return;
@@ -1042,6 +1519,10 @@ export function App() {
         }
 
         setDocument(payload);
+        setArchivePreviews((currentPreviews) => ({
+          ...currentPreviews,
+          [PRELOAD_TRANSCRIPT_ID]: buildArchivePreviewData(payload),
+        }));
         setMediaSrc(matchingOption?.mediaSrc ?? DEFAULT_MEDIA_SRC);
         setMediaName(matchingOption?.label ?? "Configured media source");
         setSelectedProcessedTranscriptId(matchingOption?.transcriptId ?? "");
@@ -1065,6 +1546,23 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    liveCaptureStateRef.current = liveCaptureState;
+  }, [liveCaptureState]);
+
+  useEffect(() => {
+    return () => {
+      liveStopRequestedRef.current = true;
+      liveRecognitionRestartEnabledRef.current = false;
+      liveRecognitionRef.current?.stop();
+      liveRecognitionRef.current = null;
+      liveMediaRecorderRef.current?.stop();
+      liveMediaRecorderRef.current = null;
+      liveMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveMediaStreamRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!document) {
       setReviewDraft(null);
       return;
@@ -1073,6 +1571,51 @@ export function App() {
     setReviewDraft(buildReviewDraft(document));
     setSaveState("idle");
   }, [document]);
+
+  useEffect(() => {
+    if (mode !== "select") {
+      return;
+    }
+
+    const missingOptions = processedTranscriptOptions
+      .filter((option) => archivePreviews[option.transcriptId] === undefined)
+      .slice(0, ARCHIVE_PREVIEW_BATCH_SIZE);
+
+    if (missingOptions.length === 0) {
+      return;
+    }
+
+    let active = true;
+
+    void Promise.all(
+      missingOptions.map(async (option) => {
+        try {
+          const playbackDocument = await loadPlaybackDocument(option.transcriptId);
+          return [option.transcriptId, buildArchivePreviewData(playbackDocument)] as const;
+        } catch {
+          return [option.transcriptId, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!active) {
+        return;
+      }
+
+      setArchivePreviews((currentPreviews) => {
+        const nextPreviews = { ...currentPreviews };
+        for (const [transcriptId, preview] of entries) {
+          if (nextPreviews[transcriptId] === undefined) {
+            nextPreviews[transcriptId] = preview;
+          }
+        }
+        return nextPreviews;
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [archivePreviews, mode, processedTranscriptOptions]);
 
   useEffect(() => {
     if (!streamSession?.id) {
@@ -1124,7 +1667,7 @@ export function App() {
             setError(null);
             setUploadProgress(1);
             setMode("review");
-            void refreshProcessedTranscriptOptions();
+            void refreshProcessedTranscriptOptions({ reset: true });
             return;
           }
 
@@ -1192,23 +1735,27 @@ export function App() {
     };
   }, [isMediaPlaying]);
 
-  const utterances = document ? buildUtterances(document) : [];
-  const speakerIds = detectSpeakerIds(document);
-  const speakerLabels = reviewDraft?.speakerLabels ?? document?.speakerLabels ?? {};
-  const speakers = buildSpeakerSummaries(utterances, speakerLabels);
-  const isReviewDirty = isReviewDraftDirty(document, reviewDraft);
+  const shouldBuildConversationState = !!document && (mode === "review" || mode === "playback");
+  const utterances = shouldBuildConversationState ? buildUtterances(document) : [];
+  const speakerIds = shouldBuildConversationState ? detectSpeakerIds(document) : [];
+  const speakerLabels = shouldBuildConversationState ? reviewDraft?.speakerLabels ?? document?.speakerLabels ?? {} : {};
+  const speakers = shouldBuildConversationState ? buildSpeakerSummaries(utterances, speakerLabels) : [];
+  const isReviewDirty = mode === "review" ? isReviewDraftDirty(document, reviewDraft) : false;
   const isTranscriptProcessing =
     streamSession !== null && ["open", "queued", "processing"].includes(streamSession.status);
-  const marginNotes = buildMarginNotes(utterances);
+  const hasMoreArchives = processedTranscriptOptions.length < archiveTotalCount;
+  const marginNotes = shouldBuildConversationState ? buildMarginNotes(utterances) : [];
   const finalSnapshotTimeMs = getConversationFinalSnapshotTimeMs(utterances, marginNotes, mediaDurationMs);
   const landscapeTimeMs = isPlaybackComplete ? finalSnapshotTimeMs : currentTimeMs;
   const activeUtterance = playbackStarted || landscapeTimeMs > 0 ? findActiveUtterance(utterances, landscapeTimeMs) : null;
   const activeSentence =
-    document?.sentenceUnits.find((sentence) => sentence.id === activeUtterance?.id) ?? null;
+    shouldBuildConversationState ? document.sentenceUnits.find((sentence) => sentence.id === activeUtterance?.id) ?? null : null;
   const finalActiveUtterance =
     playbackStarted || finalSnapshotTimeMs > 0 ? findActiveUtterance(utterances, finalSnapshotTimeMs) : null;
   const finalActiveSentence =
-    document?.sentenceUnits.find((sentence) => sentence.id === finalActiveUtterance?.id) ?? null;
+    shouldBuildConversationState
+      ? document.sentenceUnits.find((sentence) => sentence.id === finalActiveUtterance?.id) ?? null
+      : null;
   const landscapeSpeakers = speakers.map((speaker, index) => ({
     id: speaker.id,
     label: speaker.label,
@@ -1265,6 +1812,386 @@ export function App() {
     finalActiveUtterancePlaybackState?.visibleWordCount ?? 0,
     finalSnapshotTimeMs,
   );
+  const liveCaptureSupported = isLiveCaptureSupported();
+  const liveTranscriptionSupported = isLiveTranscriptionSupported();
+  const latestLiveEntry = liveTranscriptEntries[liveTranscriptEntries.length - 1] ?? null;
+  const finalizedLiveEntryCount = liveTranscriptEntries.filter((entry) => entry.isFinal).length;
+
+  const appendLiveEntry = (entry: LiveTranscriptEntry) => {
+    setLiveTranscriptEntries((currentEntries) => upsertLiveTranscriptEntry(currentEntries, entry));
+  };
+
+  const persistLiveEvent = async (
+    sessionId: string,
+    payload: AppendLiveTranscriptEventRequest,
+    nextEntry?: LiveTranscriptEntry,
+  ) => {
+    const event = await appendLiveSessionEvent(sessionId, payload);
+    if (nextEntry) {
+      appendLiveEntry(nextEntry);
+    }
+    return event;
+  };
+
+  const appendLiveTranscriptLine = async ({
+    sessionId,
+    utteranceKey,
+    text,
+    startMs,
+    endMs,
+  }: {
+    sessionId: string;
+    utteranceKey: string;
+    text: string;
+    startMs: number;
+    endMs: number;
+  }) => {
+    const nextEntry: LiveTranscriptEntry = {
+      utteranceKey,
+      text,
+      startMs,
+      endMs,
+      isFinal: true,
+      analysis: buildLiveAnalysis(text),
+    };
+
+    await persistLiveEvent(
+      sessionId,
+      {
+        event_type: "transcript.final",
+        utterance_key: utteranceKey,
+        start_ms: startMs,
+        end_ms: endMs,
+        text,
+        speaker_id: "SPEAKER_00",
+        is_final: true,
+        payload: {},
+      },
+      nextEntry,
+    );
+
+    if (nextEntry.analysis) {
+      await persistLiveEvent(sessionId, {
+        event_type: "analysis.delta",
+        utterance_key: utteranceKey,
+        start_ms: startMs,
+        end_ms: endMs,
+        text: null,
+        speaker_id: "SPEAKER_00",
+        is_final: true,
+        payload: {},
+        analysis: nextEntry.analysis,
+      });
+    }
+  };
+
+  const handleSpeechRecognitionResult = async (
+    sessionId: string,
+    event: SpeechRecognitionEventLike,
+  ): Promise<void> => {
+    const elapsedMs = Math.max(0, (liveStartedAtRef.current ? Date.now() - liveStartedAtRef.current : 0));
+
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const result = event.results[index];
+      const transcriptText = result?.[0]?.transcript?.trim();
+      if (!transcriptText) {
+        continue;
+      }
+
+      const utteranceKey = `utt-${index}`;
+      const existingDraft = liveTranscriptDraftsRef.current[utteranceKey];
+      const startMs =
+        existingDraft?.startMs ??
+        Math.max(0, elapsedMs - Math.max(transcriptText.split(/\s+/).length * 420, 900));
+      const nextEntry: LiveTranscriptEntry = {
+        utteranceKey,
+        text: transcriptText,
+        startMs,
+        endMs: Math.max(startMs + 1, elapsedMs),
+        isFinal: result.isFinal,
+        analysis: result.isFinal ? buildLiveAnalysis(transcriptText) : null,
+      };
+
+      if (
+        existingDraft &&
+        existingDraft.text === transcriptText &&
+        existingDraft.isFinal === result.isFinal
+      ) {
+        continue;
+      }
+
+      liveTranscriptDraftsRef.current[utteranceKey] = {
+        startMs,
+        text: transcriptText,
+        isFinal: result.isFinal,
+      };
+
+      const transcriptPayload: AppendLiveTranscriptEventRequest = {
+        event_type: result.isFinal ? "transcript.final" : "transcript.delta",
+        utterance_key: utteranceKey,
+        start_ms: nextEntry.startMs,
+        end_ms: nextEntry.endMs,
+        text: transcriptText,
+        speaker_id: "SPEAKER_00",
+        is_final: result.isFinal,
+        payload: {},
+      };
+
+      await persistLiveEvent(sessionId, transcriptPayload, nextEntry);
+
+      if (result.isFinal) {
+        setLiveNotice(null);
+      }
+
+      if (result.isFinal && nextEntry.analysis) {
+        await persistLiveEvent(sessionId, {
+          event_type: "analysis.delta",
+          utterance_key: utteranceKey,
+          start_ms: nextEntry.startMs,
+          end_ms: nextEntry.endMs,
+          text: null,
+          speaker_id: "SPEAKER_00",
+          is_final: true,
+          payload: {},
+          analysis: nextEntry.analysis,
+        });
+      }
+    }
+  };
+
+  const handleStartLiveSession = async () => {
+    if (!liveCaptureSupported) {
+      setError("Live recording is not available in this browser.");
+      return;
+    }
+
+    setError(null);
+    setLiveNotice(
+      liveTranscriptionSupported
+        ? null
+        : "Browser speech recognition is unavailable here. Recording will continue, and you can add manual transcript lines during capture.",
+    );
+    setMode("live");
+    setLiveCaptureState("starting");
+    setLiveTranscriptEntries([]);
+    setLiveManualText("");
+    setDocument(null);
+    setReviewDraft(null);
+    setSelectedProcessedTranscriptId("");
+    setTranscriptLoadStatus("idle");
+    setMediaSrc("");
+    setMediaName("Live session");
+    setPlaybackStarted(false);
+    setCurrentTimeMs(0);
+    setMediaDurationMs(0);
+    setIsMediaPlaying(false);
+    setIsPlaybackComplete(false);
+    setStreamSession(null);
+    setUploadProgress(null);
+    liveChunkIndexRef.current = 0;
+    liveTranscriptDraftsRef.current = {};
+    liveStopRequestedRef.current = false;
+    liveLocalChunksRef.current = [];
+    liveUploadQueueRef.current = Promise.resolve();
+
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      liveMediaStreamRef.current = mediaStream;
+
+      const mimeType = getPreferredLiveMimeType();
+      const createdLiveSession = await createLiveSession({
+        mime_type: mimeType,
+        original_filename: `live-session-${Date.now()}.webm`,
+        sample_rate_hz: null,
+        channel_count: mediaStream.getAudioTracks().length || 1,
+        session_metadata: {
+          frontend_live: true,
+          speech_recognition: true,
+        },
+      });
+      setLiveSession(createdLiveSession);
+      liveStartedAtRef.current = Date.now();
+
+      const mediaRecorder = new MediaRecorder(mediaStream, { mimeType });
+      liveMediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.ondataavailable = (recordedEvent: BlobEvent) => {
+        if (!recordedEvent.data || recordedEvent.data.size === 0) {
+          return;
+        }
+
+        liveLocalChunksRef.current.push(recordedEvent.data);
+        const nextChunkIndex = liveChunkIndexRef.current;
+        liveChunkIndexRef.current += 1;
+
+        liveUploadQueueRef.current = liveUploadQueueRef.current
+          .then(async () => {
+            await uploadChunkToLiveSession(createdLiveSession.id, recordedEvent.data, nextChunkIndex);
+            const refreshedSession = await fetchLiveSession(createdLiveSession.id);
+            setLiveSession(refreshedSession);
+          })
+          .catch((caughtError: unknown) => {
+            setError(caughtError instanceof Error ? caughtError.message : "Unknown live upload error");
+          });
+      };
+      mediaRecorder.start(LIVE_CAPTURE_TIMESLICE_MS);
+
+      const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
+      if (SpeechRecognitionCtor) {
+        const recognition = new SpeechRecognitionCtor();
+        liveRecognitionRef.current = recognition;
+        liveRecognitionRestartEnabledRef.current = true;
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
+        recognition.onerror = (recognitionEvent) => {
+          const errorCode = recognitionEvent.error?.trim() || "unknown";
+          liveRecognitionRestartEnabledRef.current = false;
+          setLiveNotice(
+            errorCode === "network"
+              ? "Browser speech recognition hit a network error. Recording is still running, but live transcript updates are paused. You can keep recording and add manual transcript lines below."
+              : `Live transcription is paused (${errorCode}). Recording is still running, and you can add manual transcript lines below.`,
+          );
+          recognition.stop();
+        };
+        recognition.onend = () => {
+          if (liveStopRequestedRef.current || !liveRecognitionRestartEnabledRef.current) {
+            return;
+          }
+          if (liveCaptureStateRef.current === "recording") {
+            try {
+              recognition.start();
+            } catch {
+              // Browsers can throw while restarting after rapid end/start cycles.
+            }
+          }
+        };
+        recognition.onresult = (recognitionEvent) => {
+          void handleSpeechRecognitionResult(createdLiveSession.id, recognitionEvent).catch((caughtError: unknown) => {
+            setLiveNotice(
+              caughtError instanceof Error ? caughtError.message : "Live transcription is paused, but recording continues.",
+            );
+          });
+        };
+        recognition.start();
+      }
+
+      setLiveCaptureState("recording");
+    } catch (caughtError: unknown) {
+      liveRecognitionRef.current?.stop();
+      liveRecognitionRef.current = null;
+      liveRecognitionRestartEnabledRef.current = false;
+      liveMediaRecorderRef.current?.stop();
+      liveMediaRecorderRef.current = null;
+      liveMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveMediaStreamRef.current = null;
+      setLiveCaptureState("idle");
+      setLiveSession(null);
+      setMode("create");
+      setError(caughtError instanceof Error ? caughtError.message : "Unknown live session error");
+    }
+  };
+
+  const handleStopLiveSession = async () => {
+    if (!liveSession) {
+      setMode("create");
+      return;
+    }
+
+    setLiveCaptureState("stopping");
+    liveStopRequestedRef.current = true;
+    liveRecognitionRestartEnabledRef.current = false;
+    liveRecognitionRef.current?.stop();
+    liveRecognitionRef.current = null;
+
+    const recorder = liveMediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      await new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+        recorder.stop();
+      });
+    }
+    liveMediaRecorderRef.current = null;
+    liveMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveMediaStreamRef.current = null;
+    await liveUploadQueueRef.current;
+
+    setLiveCaptureState("finalizing");
+
+    try {
+      const stoppedSession = await stopLiveSession(liveSession.id);
+      setLiveSession(stoppedSession);
+      const finalizedSession = await finalizeLiveSession(liveSession.id);
+      setLiveSession(finalizedSession);
+
+      if (mediaObjectUrlRef.current) {
+        URL.revokeObjectURL(mediaObjectUrlRef.current);
+      }
+      const liveBlob = new Blob(liveLocalChunksRef.current, { type: finalizedSession.mime_type || "audio/webm" });
+      const objectUrl = URL.createObjectURL(liveBlob);
+      mediaObjectUrlRef.current = objectUrl;
+
+      if (finalizedSession.transcript_id) {
+        await loadTranscriptIntoApp({
+          transcriptId: finalizedSession.transcript_id,
+          mediaSource: objectUrl,
+          mediaLabel: finalizedSession.original_filename || "Live session",
+          selectedTranscriptId: "",
+          preferredMode: "review",
+        });
+      } else {
+        setMode("create");
+      }
+
+      setLiveCaptureState("idle");
+      setLiveSession(null);
+      setLiveTranscriptEntries([]);
+      await refreshProcessedTranscriptOptions({ reset: true });
+    } catch (caughtError: unknown) {
+      setLiveCaptureState("idle");
+      setError(caughtError instanceof Error ? caughtError.message : "Unknown live finalize error");
+    }
+  };
+
+  const handleAddManualLiveTranscript = async () => {
+    if (!liveSession) {
+      return;
+    }
+
+    const normalizedText = liveManualText.trim();
+    if (!normalizedText) {
+      return;
+    }
+
+    setIsSavingLiveManualText(true);
+    try {
+      const lastEntryEndMs = liveTranscriptEntries[liveTranscriptEntries.length - 1]?.endMs ?? 0;
+      const nowMs = Math.max(
+        lastEntryEndMs + 1,
+        liveStartedAtRef.current ? Date.now() - liveStartedAtRef.current : lastEntryEndMs + 1,
+      );
+      const startMs = Math.max(0, nowMs - Math.max(normalizedText.split(/\s+/).length * 450, 1200));
+      const utteranceKey = `manual-${Date.now()}`;
+
+      await appendLiveTranscriptLine({
+        sessionId: liveSession.id,
+        utteranceKey,
+        text: normalizedText,
+        startMs,
+        endMs: nowMs,
+      });
+
+      setLiveManualText("");
+      setLiveNotice(null);
+    } catch (caughtError: unknown) {
+      setLiveNotice(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Could not add the manual transcript line, but recording is still running.",
+      );
+    } finally {
+      setIsSavingLiveManualText(false);
+    }
+  };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1275,7 +2202,7 @@ export function App() {
     setPendingFile(file);
     setSelectedProcessedTranscriptId("");
     setError(null);
-    setMode("select");
+    setMode("create");
     event.target.value = "";
   };
 
@@ -1305,7 +2232,7 @@ export function App() {
     setIsUploading(true);
     setTranscriptLoadStatus("idle");
     pollingSessionIdRef.current = null;
-    setMode("select");
+    setMode("create");
 
     try {
       const createdSession = await createStreamSession({
@@ -1344,6 +2271,18 @@ export function App() {
       });
     } catch (caughtError: unknown) {
       setError(caughtError instanceof Error ? caughtError.message : "Unknown transcript selection error");
+    }
+  };
+
+  const handleLoadMoreArchives = async () => {
+    if (isArchivePageLoading || processedTranscriptOptions.length >= archiveTotalCount) {
+      return;
+    }
+
+    try {
+      await refreshProcessedTranscriptOptions();
+    } catch (caughtError: unknown) {
+      setError(caughtError instanceof Error ? caughtError.message : "Unknown archive loading error");
     }
   };
 
@@ -1404,10 +2343,14 @@ export function App() {
         buildReviewPayload(document, reviewDraft, nextStatus),
       );
       setDocument(nextDocument);
+      setArchivePreviews((currentPreviews) => ({
+        ...currentPreviews,
+        [nextDocument.transcriptId]: buildArchivePreviewData(nextDocument),
+      }));
       setSelectedProcessedTranscriptId(nextDocument.transcriptId);
       setMode(nextStatus === "completed" ? "playback" : "review");
       setSaveState("saved");
-      void refreshProcessedTranscriptOptions();
+      void refreshProcessedTranscriptOptions({ reset: true });
     } catch (caughtError: unknown) {
       setSaveState("idle");
       setError(caughtError instanceof Error ? caughtError.message : "Unknown save error");
@@ -1441,7 +2384,7 @@ export function App() {
       setUploadProgress(null);
       setMode("select");
       setSaveState("idle");
-      await refreshProcessedTranscriptOptions();
+      await refreshProcessedTranscriptOptions({ reset: true });
     } catch (caughtError: unknown) {
       setSaveState("idle");
       setError(caughtError instanceof Error ? caughtError.message : "Unknown delete error");
@@ -1617,8 +2560,122 @@ export function App() {
   return (
     <main className="shell">
       {mode === "select" ? (
-        <>
+        <section className="archive-shell">
+          <header className="archive-header">
+            <div className="archive-header__copy">
+              <h1>OF TERRAINS WE SPEAK</h1>
+            </div>
+            <div className="archive-header__actions">
+              <button type="button" className="submit-upload" onClick={() => setMode("create")}>
+                Create New
+              </button>
+              <button type="button" className="about-link-button archive-header__about" onClick={() => setMode("about")}>
+                ABOUT
+              </button>
+            </div>
+          </header>
+
+          {processedTranscriptOptions.length === 0 && isArchivePageLoading ? (
+            <article className="surface-card archive-empty-state">
+              <h2>Loading archived conversations...</h2>
+              <p className="surface-note">Pulling in the first page of saved transcripts.</p>
+            </article>
+          ) : processedTranscriptOptions.length === 0 ? (
+            <article className="surface-card archive-empty-state">
+              <h2>No archived conversations yet</h2>
+              <p className="surface-note">
+                Start a live session or upload a file to begin building the gallery.
+              </p>
+              <button type="button" className="submit-upload" onClick={() => setMode("create")}>
+                Create the first conversation
+              </button>
+            </article>
+          ) : (
+            <>
+              <section className="archive-gallery" aria-label="Archived conversations">
+                {processedTranscriptOptions.map((option) => {
+                  const preview = archivePreviews[option.transcriptId];
+
+                  return (
+                    <ArchivePreviewCard
+                      key={option.transcriptId}
+                      isActive={selectedProcessedTranscriptId === option.transcriptId}
+                      option={option}
+                      preview={preview}
+                      onSelect={(nextOption) => void handleProcessedTranscriptSelect(nextOption)}
+                    />
+                  );
+                })}
+              </section>
+              {hasMoreArchives ? (
+                <div className="archive-gallery__actions">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => void handleLoadMoreArchives()}
+                    disabled={isArchivePageLoading}
+                  >
+                    {isArchivePageLoading ? "Loading..." : "Load More"}
+                  </button>
+                </div>
+              ) : null}
+            </>
+          )}
+        </section>
+      ) : null}
+
+      {mode === "create" ? (
+        <section className="create-shell">
+          <header className="create-shell__hero">
+            <div className="create-shell__hero-row">
+              <div className="create-shell__copy">
+                <h1>OF TERRAINS WE SPEAK</h1>
+              </div>
+              <div className="create-shell__actions">
+                <button type="button" className="submit-upload" onClick={() => setMode("select")}>
+                  Back to Archives
+                </button>
+                <button type="button" className="about-link-button create-shell__about" onClick={() => setMode("about")}>
+                  ABOUT
+                </button>
+              </div>
+            </div>
+            <div className="create-shell__intro">
+              <p className="surface-note">
+                Choose how you want to begin the next conversation.
+              </p>
+            </div>
+          </header>
+
           <section className="onboarding-stack">
+            <article className="surface-card onboarding-choice onboarding-choice--live">
+              <div className="onboarding-choice__header">
+                <h2>Start a live session</h2>
+              </div>
+              <div className="live-launch">
+                <p className="surface-note">
+                  Record from your microphone, get rolling transcript updates in the browser, and drop straight into the review flow when you stop.
+                </p>
+                <div className="live-launch__actions">
+                  <button
+                    type="button"
+                    className="submit-upload"
+                    onClick={() => void handleStartLiveSession()}
+                    disabled={!liveCaptureSupported || liveCaptureState !== "idle"}
+                  >
+                    Start live capture
+                  </button>
+                  <p className="live-launch__support">
+                    {liveCaptureSupported && liveTranscriptionSupported
+                      ? "Mic capture and browser speech recognition are available."
+                      : liveCaptureSupported
+                        ? "Mic capture is available. If browser speech recognition is blocked, you can still record and add manual transcript lines."
+                        : "This browser does not expose microphone capture for the live MVP."}
+                  </p>
+                </div>
+              </div>
+            </article>
+
             <article className="surface-card onboarding-choice onboarding-choice--upload">
               <div className="onboarding-choice__header">
                 <h2>Upload a file</h2>
@@ -1683,39 +2740,172 @@ export function App() {
                 </div>
               )}
             </article>
+          </section>
+        </section>
+      ) : null}
 
-            <div className="onboarding-divider" aria-hidden="true">
-              <span>or</span>
+      {mode === "about" ? (
+        <section className="about-shell">
+          <header className="about-shell__header">
+            <h1>OF TERRAINS WE SPEAK</h1>
+            <div className="about-shell__actions">
+              <button type="button" className="submit-upload" onClick={() => setMode("select")}>
+                Back to Main
+              </button>
+              <button type="button" className="submit-upload" onClick={() => setMode("create")}>
+                Create New
+              </button>
+            </div>
+          </header>
+
+          <section className="about-shell__content">
+            <p>
+              Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et
+              dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip
+              ex ea commodo consequat.
+            </p>
+            <p>
+              Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
+              Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est
+              laborum.
+            </p>
+          </section>
+        </section>
+      ) : null}
+
+      {mode === "live" ? (
+        <section className="live-shell">
+          <article className="surface-card live-panel live-panel--hero">
+            <div className="live-panel__header">
+              <div>
+                <p className="eyebrow">Live Capture</p>
+                <h2>{liveSession?.original_filename || "Microphone session"}</h2>
+              </div>
+              <div className="live-status-cluster">
+                <span className={`live-status-pill live-status-pill--${liveCaptureState}`}>
+                  {formatLiveCaptureState(liveCaptureState, liveSession)}
+                </span>
+                <span className="live-status-pill">
+                  {formatTimestamp(latestLiveEntry?.endMs ?? 0)}
+                </span>
+              </div>
             </div>
 
-            <article className="surface-card onboarding-choice onboarding-choice--select">
-              <div className="onboarding-choice__header">
-                <h2>Choose a saved conversation</h2>
+            <div className="live-panel__actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setMode("create")}
+                disabled={liveCaptureState !== "idle"}
+              >
+                Back to Create
+              </button>
+              <button
+                type="button"
+                className="submit-upload"
+                onClick={() => void handleStopLiveSession()}
+                disabled={!liveSession || !["recording", "starting"].includes(liveCaptureState)}
+              >
+                Stop and Review
+              </button>
+            </div>
+
+            {liveNotice ? (
+              <div className="live-notice" role="status" aria-live="polite">
+                <p>{liveNotice}</p>
               </div>
-              {processedTranscriptOptions.length === 0 ? (
+            ) : null}
+          </article>
+
+          <div className="live-grid">
+            <article className="surface-card live-panel">
+              <div className="section-heading">
+                <div>
+                  <h2>Rolling transcript</h2>
+                  <p className="surface-note">Interim lines stay soft until the browser marks them final.</p>
+                </div>
+              </div>
+
+              {liveTranscriptEntries.length === 0 ? (
                 <div className="empty-state">
-                  <p>No processed transcripts are available yet.</p>
-                  <p>Upload a file and let the worker finish transcription to populate this list.</p>
+                  <p>Listening for speech…</p>
+                  <p>Start talking and the transcript will begin to appear here.</p>
                 </div>
               ) : (
-                <div className="transcript-list">
-                  {processedTranscriptOptions.map((option) => (
-                    <button
-                      type="button"
-                      key={option.transcriptId}
-                      className={`transcript-option${selectedProcessedTranscriptId === option.transcriptId ? " transcript-option--active" : ""
-                        }`}
-                      onClick={() => void handleProcessedTranscriptSelect(option)}
+                <div className="live-transcript-list">
+                  {liveTranscriptEntries.map((entry) => (
+                    <article
+                      key={entry.utteranceKey}
+                      className={`live-transcript-row${entry.isFinal ? " live-transcript-row--final" : " live-transcript-row--interim"}`}
                     >
-                      <span className="transcript-option__title">{option.label}</span>
-                      <span className="transcript-option__date">{formatTranscriptCreatedAt(option.createdAt)}</span>
-                    </button>
+                      <div className="live-transcript-row__meta">
+                        <span>{formatTimestamp(entry.startMs)}</span>
+                        <span>{entry.isFinal ? "final" : "listening"}</span>
+                      </div>
+                      <p>{entry.text}</p>
+                    </article>
                   ))}
                 </div>
               )}
             </article>
-          </section>
-        </>
+
+            <article className="surface-card live-panel">
+              <div className="section-heading">
+                <div>
+                  <h2>Live analysis</h2>
+                  <p className="surface-note">Client-side heuristics mirror the backend analysis shape for now.</p>
+                </div>
+              </div>
+
+              <div className="live-metrics">
+                <div className="live-metric-card">
+                  <span>Final utterances</span>
+                  <strong>{finalizedLiveEntryCount}</strong>
+                </div>
+                <div className="live-metric-card">
+                  <span>Saved chunks</span>
+                  <strong>{liveSession?.received_chunks ?? 0}</strong>
+                </div>
+              </div>
+
+              {latestLiveEntry?.analysis ? (
+                <div className="live-analysis-card">
+                  <div className="live-analysis-card__scores">
+                    <span>Politeness {Math.round(latestLiveEntry.analysis.politeness_score * 100)}%</span>
+                    <span>Confidence {Math.round(latestLiveEntry.analysis.semantic_confidence_score * 100)}%</span>
+                    <span>Main message {Math.round(latestLiveEntry.analysis.main_message_likelihood * 100)}%</span>
+                  </div>
+                  <pre>{stringifyAnalysisPayload(latestLiveEntry.analysis.analysis_payload)}</pre>
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <p>No finalized analysis yet.</p>
+                  <p>Once a line lands as final, its heuristic summary will appear here.</p>
+                </div>
+              )}
+
+              <div className="live-manual-entry">
+                <label className="transcript-row__field transcript-row__field--text">
+                  <span>Add a manual transcript line</span>
+                  <textarea
+                    value={liveManualText}
+                    onChange={(event) => setLiveManualText(event.target.value)}
+                    rows={3}
+                    placeholder="Type a transcript line here if browser speech recognition is unavailable."
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => void handleAddManualLiveTranscript()}
+                  disabled={!liveSession || isSavingLiveManualText || !liveManualText.trim()}
+                >
+                  {isSavingLiveManualText ? "Saving line..." : "Add line"}
+                </button>
+              </div>
+            </article>
+          </div>
+        </section>
       ) : null}
 
       {mode === "review" && document && reviewDraft ? (
@@ -1733,7 +2923,7 @@ export function App() {
                 </div>
                 <div className="review-toolbar__actions">
                   <button type="button" className="ghost-button" onClick={() => setMode("select")}>
-                    Back to Files
+                    Back to Archive
                   </button>
                   <button
                     type="button"
@@ -1893,7 +3083,7 @@ export function App() {
                 <h2>{document.conversationTitle || mediaName}</h2>
                 <div className="playback-header__actions">
                   <button type="button" className="ghost-button" onClick={() => setMode("select")}>
-                    Back to Files
+                    Back to Archive
                   </button>
                   <button type="button" className="ghost-button" onClick={() => setMode("review")}>
                     Edit Transcript

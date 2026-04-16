@@ -65,6 +65,7 @@ interface ConversationLandscapeProps {
   marginNotes: ConversationLandscapeMarginNote[];
   currentTimeMs: number;
   snapshotMode?: "live" | "final";
+  staticPreview?: boolean;
 }
 
 export interface ConversationLandscapeHandle {
@@ -1443,12 +1444,14 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   marginNotes,
   currentTimeMs,
   snapshotMode = "live",
+  staticPreview = false,
 }: ConversationLandscapeProps, ref) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const wordRefs = useRef(new Map<string, HTMLSpanElement>());
   const sectionsCacheRef = useRef<LandscapeSectionsCache | null>(null);
   const [wordPositions, setWordPositions] = useState<Record<string, WordPosition>>({});
   const [marginNoteLaunchPositions, setMarginNoteLaunchPositions] = useState<Record<string, LaunchPosition>>({});
+  const isStaticPreview = staticPreview && snapshotMode === "final";
   const sectionsCacheKey = getLandscapeSectionsCacheKey(speakers, utterances);
   if (!sectionsCacheRef.current || sectionsCacheRef.current.key !== sectionsCacheKey) {
     sectionsCacheRef.current = {
@@ -1466,17 +1469,19 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   const transcriptCurrentTimeMs = activeTranscript?.currentTimeMs ?? currentTimeMs;
   const canvasWidth = canvasRef.current?.clientWidth ?? 0;
   const canvasHeight = canvasRef.current?.clientHeight ?? 0;
-  const transcriptWordTokens = activeTranscript?.tokens.filter(
+  const transcriptWordTokens = isStaticPreview ? [] : activeTranscript?.tokens.filter(
     (token): token is ConversationLandscapeTranscriptWordToken => token.kind === "word",
   ) ?? [];
   const transcriptTokenLayoutKey = activeTranscript?.tokens.map((token) => token.id).join("|") ?? "";
   const visibleMarginNotes = buildVisibleMarginNotes(marginNotes, transcriptCurrentTimeMs, sectionsById);
-  const fallingWords = buildFallingWordRenderStates(
-    transcriptWordTokens,
-    wordPositions,
-    transcriptCurrentTimeMs,
-    snapshotMode,
-  );
+  const fallingWords = isStaticPreview
+    ? []
+    : buildFallingWordRenderStates(
+      transcriptWordTokens,
+      wordPositions,
+      transcriptCurrentTimeMs,
+      snapshotMode,
+    );
 
   useImperativeHandle(
     ref,
@@ -1699,13 +1704,19 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   );
 
   useLayoutEffect(() => {
+    if (isStaticPreview) {
+      return;
+    }
     const nextPositions = measureTranscriptWordPositions(canvasRef.current, wordRefs.current);
     setWordPositions((currentPositions) =>
       areWordPositionsEqual(currentPositions, nextPositions) ? currentPositions : nextPositions,
     );
-  }, [transcriptTokenLayoutKey]);
+  }, [isStaticPreview, transcriptTokenLayoutKey]);
 
   useLayoutEffect(() => {
+    if (isStaticPreview) {
+      return;
+    }
     if (!activeTranscript) {
       return;
     }
@@ -1750,9 +1761,12 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
         ? currentLaunchPositions
         : mergedLaunchPositions;
     });
-  }, [activeTranscript?.utteranceId, marginNotes, transcriptTokenLayoutKey, wordPositions]);
+  }, [activeTranscript?.utteranceId, isStaticPreview, marginNotes, transcriptTokenLayoutKey, wordPositions]);
 
   useEffect(() => {
+    if (isStaticPreview) {
+      return;
+    }
     if (!canvasRef.current || typeof ResizeObserver === "undefined") {
       return;
     }
@@ -1766,7 +1780,7 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
 
     observer.observe(canvasRef.current);
     return () => observer.disconnect();
-  }, []);
+  }, [isStaticPreview]);
 
   return (
     <section className="conversation-landscape" aria-label="Conversation landscape">
@@ -1794,6 +1808,9 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
                   <span
                     key={token.id}
                     ref={(node) => {
+                      if (isStaticPreview) {
+                        return;
+                      }
                       if (node) {
                         wordRefs.current.set(token.id, node);
                       } else {
@@ -1834,13 +1851,17 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
                   top: `${topPercent}%`,
                   width: `${widthPx}px`,
                   color,
-                  animationDuration: `${settleDurationMs}ms`,
-                  animationDelay: `${Math.max(-elapsedMs, -settleDurationMs)}ms`,
-                  ["--margin-launch-x" as string]: `${launchDeltaX}px`,
-                  ["--margin-launch-y" as string]: `${launchDeltaY}px`,
-                  ["--margin-sway-x" as string]: `${lerp(20, 42, hashUnit(`${note.id}-sway`))}px`,
-                  ["--margin-bob-y" as string]: `${10 + hashUnit(`${note.id}-bob`) * 8}px`,
-                  ["--margin-rotation" as string]: `${hashSigned(`${note.id}-rotation`) * 5.5}deg`,
+                  ...(isStaticPreview
+                    ? undefined
+                    : {
+                      animationDuration: `${settleDurationMs}ms`,
+                      animationDelay: `${Math.max(-elapsedMs, -settleDurationMs)}ms`,
+                      ["--margin-launch-x" as string]: `${launchDeltaX}px`,
+                      ["--margin-launch-y" as string]: `${launchDeltaY}px`,
+                      ["--margin-sway-x" as string]: `${lerp(20, 42, hashUnit(`${note.id}-sway`))}px`,
+                      ["--margin-bob-y" as string]: `${10 + hashUnit(`${note.id}-bob`) * 8}px`,
+                      ["--margin-rotation" as string]: `${hashSigned(`${note.id}-rotation`) * 5.5}deg`,
+                    }),
                 }}
               >
                 {note.text}
@@ -1848,37 +1869,39 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
             );
           })}
         </div>
-        <div className="conversation-landscape__falling-words" style={{ color: transcriptColor }} aria-hidden="true">
-          {fallingWords.map(({ token, position, elapsedMs, driftX, swayX, bobY, rotation, isSettled }) => {
-            return (
-              <span
-                key={`${activeTranscript?.utteranceId ?? "utterance"}-${token.id}`}
-                className={[
-                  "conversation-landscape__falling-word",
-                  token.isHedge ? "conversation-landscape__falling-word--hedging" : "",
-                  isSettled ? "conversation-landscape__falling-word--settled" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                style={{
-                  left: `${position.left + position.width * 0.5}px`,
-                  top: `${position.top}px`,
-                  width: `${Math.max(position.width, 1)}px`,
-                  height: `${Math.max(position.height, 1)}px`,
-                  animationDuration: isSettled ? undefined : `${token.dropDurationMs}ms`,
-                  animationDelay: isSettled ? undefined : `${Math.max(-elapsedMs, -token.dropDurationMs)}ms`,
-                  ["--fall-drift-x" as string]: `${driftX}px`,
-                  ["--fall-sway-x" as string]: `${swayX}px`,
-                  ["--fall-bob-y" as string]: `${bobY}px`,
-                  ["--fall-distance-y" as string]: `${FALL_DISTANCE_Y}px`,
-                  ["--fall-rotation" as string]: `${rotation}deg`,
-                }}
-              >
-                {token.text}
-              </span>
-            );
-          })}
-        </div>
+        {isStaticPreview ? null : (
+          <div className="conversation-landscape__falling-words" style={{ color: transcriptColor }} aria-hidden="true">
+            {fallingWords.map(({ token, position, elapsedMs, driftX, swayX, bobY, rotation, isSettled }) => {
+              return (
+                <span
+                  key={`${activeTranscript?.utteranceId ?? "utterance"}-${token.id}`}
+                  className={[
+                    "conversation-landscape__falling-word",
+                    token.isHedge ? "conversation-landscape__falling-word--hedging" : "",
+                    isSettled ? "conversation-landscape__falling-word--settled" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  style={{
+                    left: `${position.left + position.width * 0.5}px`,
+                    top: `${position.top}px`,
+                    width: `${Math.max(position.width, 1)}px`,
+                    height: `${Math.max(position.height, 1)}px`,
+                    animationDuration: isSettled ? undefined : `${token.dropDurationMs}ms`,
+                    animationDelay: isSettled ? undefined : `${Math.max(-elapsedMs, -token.dropDurationMs)}ms`,
+                    ["--fall-drift-x" as string]: `${driftX}px`,
+                    ["--fall-sway-x" as string]: `${swayX}px`,
+                    ["--fall-bob-y" as string]: `${bobY}px`,
+                    ["--fall-distance-y" as string]: `${FALL_DISTANCE_Y}px`,
+                    ["--fall-rotation" as string]: `${rotation}deg`,
+                  }}
+                >
+                  {token.text}
+                </span>
+              );
+            })}
+          </div>
+        )}
         <svg
           className="conversation-landscape__svg"
           viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}

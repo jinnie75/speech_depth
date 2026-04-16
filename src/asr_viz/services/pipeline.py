@@ -11,6 +11,7 @@ from asr_viz.pipeline.segmentation import segment_transcript
 from asr_viz.providers.analysis_v2 import AnalysisProvider
 from asr_viz.providers.diarization import DiarizationProvider
 from asr_viz.providers.transcription import TranscriptionProvider
+from asr_viz.services.archive_previews import update_transcript_archive_preview
 from asr_viz.services.media import resolve_media_source
 
 
@@ -148,6 +149,7 @@ class ProcessingPipeline:
                 )
 
             session.flush()
+            update_transcript_archive_preview(transcript)
             job.status = JobStatus.COMPLETED.value
             job.current_stage = JobStage.COMPLETE.value
             job.completed_at = utcnow()

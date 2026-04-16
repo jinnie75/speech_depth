@@ -30,6 +30,73 @@ class CreateStreamSessionRequest(BaseModel):
     ingest_metadata: dict = Field(default_factory=dict)
 
 
+class CreateLiveSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mime_type: str | None = None
+    original_filename: str | None = None
+    sample_rate_hz: int | None = Field(default=None, ge=1)
+    channel_count: int | None = Field(default=None, ge=1)
+    preferred_language: PreferredLanguage = "auto"
+    session_metadata: dict = Field(default_factory=dict)
+
+
+class ArchivePreviewSpeakerResponse(BaseModel):
+    id: str
+    label: str
+    side: Literal["left", "right"]
+    opacity: float
+    total_duration_ms: int
+    average_politeness: float
+
+
+class ArchivePreviewUtteranceResponse(BaseModel):
+    id: str
+    speaker_id: str
+    politeness_score: float
+    contour_signal_count: float
+    progress: float
+    order: int
+
+
+class ArchivePreviewTranscriptTokenResponse(BaseModel):
+    id: str
+    kind: Literal["text", "word"]
+    text: str
+    start: int | None = None
+    end: int | None = None
+    is_hedge: bool | None = None
+    is_substance: bool | None = None
+    drop_start_ms: int | None = None
+    drop_duration_ms: int | None = None
+
+
+class ArchivePreviewTranscriptResponse(BaseModel):
+    utterance_id: str
+    current_time_ms: int
+    tokens: list[ArchivePreviewTranscriptTokenResponse]
+
+
+class ArchivePreviewMarginNoteResponse(BaseModel):
+    id: str
+    text: str
+    speaker_id: str
+    utterance_id: str
+    appear_at_ms: int
+    source_start: int
+    source_end: int
+    settle_duration_ms: int
+
+
+class ArchivePreviewResponse(BaseModel):
+    speakers: list[ArchivePreviewSpeakerResponse]
+    utterances: list[ArchivePreviewUtteranceResponse]
+    active_speaker_id: str | None = None
+    active_transcript: ArchivePreviewTranscriptResponse | None = None
+    margin_notes: list[ArchivePreviewMarginNoteResponse]
+    current_time_ms: int
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,10 +122,12 @@ class JobResponse(BaseModel):
     media_display_name: str | None = None
     conversation_title: str | None = None
     review_status: str = "not_started"
+    archive_preview: ArchivePreviewResponse | None = None
 
 
 class JobListResponse(BaseModel):
     jobs: list[JobResponse]
+    total: int
 
 
 class StreamSessionResponse(BaseModel):
@@ -78,6 +147,76 @@ class StreamSessionResponse(BaseModel):
     processing_job_status: str | None = None
     processing_stage: str | None = None
     transcript_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LiveAnalysisEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    politeness_score: float = Field(ge=0.0, le=1.0)
+    semantic_confidence_score: float = Field(ge=0.0, le=1.0)
+    main_message_likelihood: float = Field(ge=0.0, le=1.0)
+    analysis_model: str = Field(default="live-heuristic:mvp", min_length=1)
+    analysis_payload: dict = Field(default_factory=dict)
+
+
+class AppendLiveTranscriptEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: Literal["transcript.delta", "transcript.final", "analysis.delta", "session.state"]
+    utterance_key: str | None = None
+    start_ms: int | None = Field(default=None, ge=0)
+    end_ms: int | None = Field(default=None, ge=0)
+    text: str | None = None
+    speaker_id: str | None = None
+    is_final: bool = False
+    payload: dict = Field(default_factory=dict)
+    analysis: LiveAnalysisEventRequest | None = None
+
+
+class LiveTranscriptEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    live_session_id: str
+    event_index: int
+    event_type: str
+    utterance_key: str | None
+    start_ms: int | None
+    end_ms: int | None
+    text: str | None
+    speaker_id: str | None
+    is_final: bool
+    payload: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+class LiveSessionEventListResponse(BaseModel):
+    events: list[LiveTranscriptEventResponse]
+
+
+class LiveSessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    status: str
+    mime_type: str | None
+    original_filename: str | None
+    sample_rate_hz: int | None
+    channel_count: int | None
+    storage_path: str
+    total_bytes: int
+    received_chunks: int
+    last_chunk_index: int
+    session_metadata: dict
+    error_message: str | None
+    transcript_id: str | None
+    media_asset_id: str | None
+    processing_job_id: str | None
+    stopped_at: datetime | None
+    finalized_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

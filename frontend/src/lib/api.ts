@@ -1,6 +1,11 @@
 import type {
+  AppendLiveTranscriptEventRequest,
+  CreateLiveSessionRequest,
   CreateStreamSessionRequest,
+  JobListPage,
   JobSummary,
+  LiveSessionResponse,
+  LiveTranscriptEventResponse,
   PlaybackDocument,
   TranscriptSegmentResponse,
   SentenceUnitResponse,
@@ -24,7 +29,7 @@ async function fetchJson<T>(path: string): Promise<T> {
 }
 
 async function fetchLatestCompletedTranscriptId(): Promise<string> {
-  const jobList = await fetchJson<{ jobs: JobSummary[] }>("/jobs?limit=50");
+  const jobList = await fetchJson<JobListPage>("/jobs?limit=50&completed_only=true");
   const latest = jobList.jobs.find((job) => job.status === "completed" && job.transcript_id);
   if (!latest?.transcript_id) {
     throw new Error("No completed transcripts were found.");
@@ -32,9 +37,8 @@ async function fetchLatestCompletedTranscriptId(): Promise<string> {
   return latest.transcript_id;
 }
 
-export async function fetchCompletedJobs(limit = 50): Promise<JobSummary[]> {
-  const jobList = await fetchJson<{ jobs: JobSummary[] }>(`/jobs?limit=${limit}`);
-  return jobList.jobs.filter((job) => job.status === "completed" && job.transcript_id);
+export async function fetchCompletedJobs(limit = 50, offset = 0): Promise<JobListPage> {
+  return fetchJson<JobListPage>(`/jobs?limit=${limit}&offset=${offset}&completed_only=true`);
 }
 
 export async function loadPlaybackDocument(transcriptId?: string): Promise<PlaybackDocument> {
@@ -79,6 +83,20 @@ export async function createStreamSession(payload: CreateStreamSessionRequest): 
   return (await response.json()) as StreamSessionResponse;
 }
 
+export async function createLiveSession(payload: CreateLiveSessionRequest): Promise<LiveSessionResponse> {
+  const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to create live session (${response.status})`);
+  }
+  return (await response.json()) as LiveSessionResponse;
+}
+
 export async function uploadFileToStreamSession(
   sessionId: string,
   file: File,
@@ -104,6 +122,24 @@ export async function uploadFileToStreamSession(
   }
 }
 
+export async function uploadChunkToLiveSession(
+  sessionId: string,
+  chunk: Blob,
+  chunkIndex?: number,
+): Promise<void> {
+  const query = typeof chunkIndex === "number" ? `?chunk_index=${chunkIndex}` : "";
+  const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/chunks${query}`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/octet-stream",
+    },
+    body: chunk,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to upload live session chunk (${response.status})`);
+  }
+}
+
 export async function finalizeStreamSession(sessionId: string): Promise<StreamSessionResponse> {
   const response = await fetch(`${DEFAULT_BASE_URL}/stream-sessions/${sessionId}/finalize`, {
     method: "POST",
@@ -116,6 +152,52 @@ export async function finalizeStreamSession(sessionId: string): Promise<StreamSe
 
 export async function fetchStreamSession(sessionId: string): Promise<StreamSessionResponse> {
   return fetchJson<StreamSessionResponse>(`/stream-sessions/${sessionId}`);
+}
+
+export async function appendLiveSessionEvent(
+  sessionId: string,
+  payload: AppendLiveTranscriptEventRequest,
+): Promise<LiveTranscriptEventResponse> {
+  const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/events`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to append live session event (${response.status})`);
+  }
+  return (await response.json()) as LiveTranscriptEventResponse;
+}
+
+export async function fetchLiveSession(sessionId: string): Promise<LiveSessionResponse> {
+  return fetchJson<LiveSessionResponse>(`/live-sessions/${sessionId}`);
+}
+
+export async function fetchLiveSessionEvents(sessionId: string): Promise<LiveTranscriptEventResponse[]> {
+  const response = await fetchJson<{ events: LiveTranscriptEventResponse[] }>(`/live-sessions/${sessionId}/events`);
+  return response.events;
+}
+
+export async function stopLiveSession(sessionId: string): Promise<LiveSessionResponse> {
+  const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/stop`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to stop live session (${response.status})`);
+  }
+  return (await response.json()) as LiveSessionResponse;
+}
+
+export async function finalizeLiveSession(sessionId: string): Promise<LiveSessionResponse> {
+  const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/finalize`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to finalize live session (${response.status})`);
+  }
+  return (await response.json()) as LiveSessionResponse;
 }
 
 export async function saveTranscriptReview(

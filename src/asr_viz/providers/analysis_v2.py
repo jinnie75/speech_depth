@@ -254,6 +254,7 @@ _SUBSTANCE_LIFE_TREATMENT_PHRASES = (
 _CLAUSE_SPLIT_RE = re.compile(r"\s*[,;:]\s*")
 _KOREAN_HEDGE_PHRASES = (
     "혹시",
+    "것 같",
     "제가 틀릴",
     "다름이 아니라",
     "괜찮다면",

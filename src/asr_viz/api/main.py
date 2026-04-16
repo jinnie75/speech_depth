@@ -6,24 +6,39 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from asr_viz.api.schemas import (
+    AppendLiveTranscriptEventRequest,
     CreateJobRequest,
+    CreateLiveSessionRequest,
     TranscriptReviewUpdateRequest,
     CreateStreamSessionRequest,
     JobListResponse,
     JobResponse,
+    LiveSessionEventListResponse,
+    LiveSessionResponse,
+    LiveTranscriptEventResponse,
     StreamSessionResponse,
     TranscriptResponse,
 )
 from asr_viz.db.session import get_session
 from asr_viz.models.job import ProcessingJob
+from asr_viz.models.live import LiveSession
 from asr_viz.models.stream import StreamIngestionSession
 from asr_viz.models.transcript import SentenceUnit, Transcript
 from asr_viz.services.bootstrap import init_db
 from asr_viz.services.jobs import create_job, infer_source_type
+from asr_viz.services.archive_previews import update_transcript_archive_preview
+from asr_viz.services.live_sessions import (
+    append_live_chunk,
+    append_live_event,
+    create_live_session,
+    finalize_live_session,
+    list_live_events,
+    stop_live_session,
+)
 from asr_viz.services.streaming import (
     append_stream_chunk,
     create_stream_session,
@@ -82,16 +97,70 @@ def _serialize_stream_session(stream_session: StreamIngestionSession) -> StreamS
     )
 
 
+def _serialize_live_session(live_session: LiveSession) -> LiveSessionResponse:
+    return LiveSessionResponse(
+        id=live_session.id,
+        status=live_session.status,
+        mime_type=live_session.mime_type,
+        original_filename=live_session.original_filename,
+        sample_rate_hz=live_session.sample_rate_hz,
+        channel_count=live_session.channel_count,
+        storage_path=live_session.storage_path,
+        total_bytes=live_session.total_bytes,
+        received_chunks=live_session.received_chunks,
+        last_chunk_index=live_session.last_chunk_index,
+        session_metadata=live_session.session_metadata,
+        error_message=live_session.error_message,
+        transcript_id=live_session.transcript_id,
+        media_asset_id=live_session.media_asset_id,
+        processing_job_id=live_session.processing_job_id,
+        stopped_at=live_session.stopped_at,
+        finalized_at=live_session.finalized_at,
+        created_at=live_session.created_at,
+        updated_at=live_session.updated_at,
+    )
+
+
 @app.get("/jobs", response_model=JobListResponse)
-def list_jobs(limit: int = 20, session: Session = Depends(get_session)) -> JobListResponse:
+def list_jobs(
+    limit: int = 20,
+    offset: int = 0,
+    completed_only: bool = False,
+    session: Session = Depends(get_session),
+) -> JobListResponse:
     capped_limit = max(1, min(limit, 100))
+    safe_offset = max(0, offset)
+    base_query = select(ProcessingJob)
+    total_query = select(func.count()).select_from(ProcessingJob)
+
+    if completed_only:
+        completion_filters = (
+            ProcessingJob.status == "completed",
+            ProcessingJob.transcript_id.is_not(None),
+        )
+        base_query = base_query.where(*completion_filters)
+        total_query = total_query.where(*completion_filters)
+
+    total = session.scalar(total_query) or 0
     jobs = session.scalars(
-        select(ProcessingJob)
+        base_query
         .order_by(ProcessingJob.created_at.desc())
+        .offset(safe_offset)
         .limit(capped_limit)
         .options(selectinload(ProcessingJob.media_asset), selectinload(ProcessingJob.transcript))
     ).all()
-    return JobListResponse(jobs=jobs)
+    transcripts_needing_preview = [job.transcript for job in jobs if job.transcript is not None and job.transcript.archive_preview is None]
+    if transcripts_needing_preview:
+        transcript_ids = [transcript.id for transcript in transcripts_needing_preview]
+        hydrated_transcripts = session.scalars(
+            select(Transcript)
+            .where(Transcript.id.in_(transcript_ids))
+            .options(selectinload(Transcript.sentence_units).selectinload(SentenceUnit.analysis_result))
+        ).all()
+        for transcript in hydrated_transcripts:
+            update_transcript_archive_preview(transcript)
+        session.commit()
+    return JobListResponse(jobs=jobs, total=int(total))
 
 
 @app.post("/jobs", response_model=JobResponse, status_code=201)
@@ -110,6 +179,119 @@ def create_processing_job(
         ingest_metadata=_with_preferred_language(request.ingest_metadata, request.preferred_language),
     )
     return job
+
+
+@app.post("/live-sessions", response_model=LiveSessionResponse, status_code=201)
+def create_live_capture_session(
+    request: CreateLiveSessionRequest,
+    session: Session = Depends(get_session),
+) -> LiveSessionResponse:
+    live_session = create_live_session(
+        session,
+        mime_type=request.mime_type,
+        original_filename=request.original_filename,
+        sample_rate_hz=request.sample_rate_hz,
+        channel_count=request.channel_count,
+        session_metadata=_with_preferred_language(request.session_metadata, request.preferred_language),
+    )
+    return _serialize_live_session(live_session)
+
+
+@app.get("/live-sessions/{session_id}", response_model=LiveSessionResponse)
+def get_live_capture_session(session_id: str, session: Session = Depends(get_session)) -> LiveSessionResponse:
+    live_session = session.get(LiveSession, session_id)
+    if live_session is None:
+        raise HTTPException(status_code=404, detail="live session not found")
+    return _serialize_live_session(live_session)
+
+
+@app.put("/live-sessions/{session_id}/chunks", status_code=202)
+async def upload_live_session_chunk(
+    session_id: str,
+    request: Request,
+    chunk_index: int | None = None,
+    session: Session = Depends(get_session),
+) -> Response:
+    live_session = session.get(LiveSession, session_id)
+    if live_session is None:
+        raise HTTPException(status_code=404, detail="live session not found")
+
+    chunk = await request.body()
+    if not chunk:
+        raise HTTPException(status_code=400, detail="empty chunk")
+
+    try:
+        append_live_chunk(session, live_session, chunk, chunk_index=chunk_index)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return Response(status_code=202)
+
+
+@app.post("/live-sessions/{session_id}/events", response_model=LiveTranscriptEventResponse, status_code=201)
+def append_live_capture_event(
+    session_id: str,
+    request: AppendLiveTranscriptEventRequest,
+    session: Session = Depends(get_session),
+) -> LiveTranscriptEventResponse:
+    live_session = session.get(LiveSession, session_id)
+    if live_session is None:
+        raise HTTPException(status_code=404, detail="live session not found")
+
+    try:
+        event = append_live_event(
+            session,
+            live_session,
+            event_type=request.event_type,
+            utterance_key=request.utterance_key,
+            start_ms=request.start_ms,
+            end_ms=request.end_ms,
+            text=request.text,
+            speaker_id=request.speaker_id,
+            is_final=request.is_final,
+            payload=request.payload,
+            analysis=request.analysis.model_dump() if request.analysis else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return event
+
+
+@app.get("/live-sessions/{session_id}/events", response_model=LiveSessionEventListResponse)
+def get_live_capture_events(session_id: str, session: Session = Depends(get_session)) -> LiveSessionEventListResponse:
+    live_session = session.get(LiveSession, session_id)
+    if live_session is None:
+        raise HTTPException(status_code=404, detail="live session not found")
+    return LiveSessionEventListResponse(events=list_live_events(session, session_id))
+
+
+@app.post("/live-sessions/{session_id}/stop", response_model=LiveSessionResponse)
+def stop_live_capture_session(session_id: str, session: Session = Depends(get_session)) -> LiveSessionResponse:
+    live_session = session.get(LiveSession, session_id)
+    if live_session is None:
+        raise HTTPException(status_code=404, detail="live session not found")
+
+    try:
+        live_session = stop_live_session(session, live_session)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return _serialize_live_session(live_session)
+
+
+@app.post("/live-sessions/{session_id}/finalize", response_model=LiveSessionResponse)
+def finalize_live_capture_session(session_id: str, session: Session = Depends(get_session)) -> LiveSessionResponse:
+    live_session = session.get(LiveSession, session_id)
+    if live_session is None:
+        raise HTTPException(status_code=404, detail="live session not found")
+
+    try:
+        live_session = finalize_live_session(session, live_session)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return _serialize_live_session(live_session)
 
 
 @app.post("/stream-sessions", response_model=StreamSessionResponse, status_code=201)
@@ -302,6 +484,7 @@ def update_transcript_review(
 
         sentence.sentence_metadata = sentence_metadata
 
+    update_transcript_archive_preview(transcript)
     session.commit()
     session.refresh(transcript)
     return transcript

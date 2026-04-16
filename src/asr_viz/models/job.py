@@ -66,3 +66,9 @@ class ProcessingJob(IdMixin, TimestampMixin, Base):
         if self.transcript is None:
             return "not_started"
         return self.transcript.review_status
+
+    @property
+    def archive_preview(self) -> dict | None:
+        if self.transcript is None:
+            return None
+        return self.transcript.archive_preview

@@ -161,6 +161,40 @@ class TranscriptReviewApiTests(unittest.TestCase):
         jobs_payload = jobs_response.json()
         self.assertEqual(jobs_payload["jobs"][0]["conversation_title"], "Design Interview")
         self.assertEqual(jobs_payload["jobs"][0]["review_status"], "in_progress")
+        self.assertIsNotNone(jobs_payload["jobs"][0]["archive_preview"])
+        self.assertEqual(jobs_payload["jobs"][0]["archive_preview"]["speakers"][0]["label"], "Guest")
+        self.assertEqual(jobs_payload["jobs"][0]["archive_preview"]["current_time_ms"], 2200)
+
+    def test_jobs_backfill_archive_preview_for_legacy_transcripts(self) -> None:
+        client = TestClient(api_main.app)
+
+        jobs_response = client.get("/jobs")
+
+        self.assertEqual(jobs_response.status_code, 200)
+        jobs_payload = jobs_response.json()
+        self.assertEqual(len(jobs_payload["jobs"]), 1)
+        preview = jobs_payload["jobs"][0]["archive_preview"]
+        self.assertIsNotNone(preview)
+        self.assertEqual(preview["speakers"][0]["label"], "Speaker 1")
+        self.assertEqual(preview["utterances"][0]["progress"], 1.0)
+        self.assertEqual(preview["active_transcript"]["utterance_id"], self.sentence_ids[1])
+
+        with self.session_factory() as session:
+            transcript = session.get(Transcript, self.transcript_id)
+            self.assertIsNotNone(transcript)
+            self.assertIn("archive_preview", transcript.transcript_metadata)
+
+    def test_jobs_completed_only_supports_limit_offset_and_total(self) -> None:
+        self._seed_transcript()
+        client = TestClient(api_main.app)
+
+        response = client.get("/jobs?completed_only=true&limit=1&offset=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(len(payload["jobs"]), 1)
+        self.assertIsNotNone(payload["jobs"][0]["transcript_id"])
 
     def test_patch_review_rejects_invalid_speaker_and_sentence_ids(self) -> None:
         client = TestClient(api_main.app)

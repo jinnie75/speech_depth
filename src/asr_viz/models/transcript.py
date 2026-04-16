@@ -53,6 +53,11 @@ class Transcript(IdMixin, TimestampMixin, Base):
         except ValueError:
             return None
 
+    @property
+    def archive_preview(self) -> dict | None:
+        value = self.transcript_metadata.get("archive_preview")
+        return value if isinstance(value, dict) else None
+
 
 class TranscriptSegment(IdMixin, TimestampMixin, Base):
     __tablename__ = "transcript_segments"
