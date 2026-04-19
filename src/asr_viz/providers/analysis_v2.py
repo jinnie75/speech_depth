@@ -217,7 +217,7 @@ _SUBSTANCE_I_AM_INVALID_DESCRIPTOR_WORDS = {
 _NRC_EMOLEX_ENV_VAR = "NRC_EMOLEX_PATH"
 _NRC_EMOLEX_FILENAME = "NRC-Emotion-Lexicon-Wordlevel-v0.92.txt"
 _NRC_EMOLEX_KO_ENV_VAR = "NRC_EMOLEX_KO_PATH"
-_NRC_EMOLEX_KO_FILENAME = "NRC-Emotion-Lexicon-Wordlevel-v0.92-Korean.txt"
+_KOREAN_EMOTION_WORDS_FILENAME = "korean_emotion_words_filtered.txt"
 _SUBSTANCE_LIFE_TREATMENT_PHRASES = (
     "my life",
     "my whole life",
@@ -253,10 +253,13 @@ _SUBSTANCE_LIFE_TREATMENT_PHRASES = (
 )
 _CLAUSE_SPLIT_RE = re.compile(r"\s*[,;:]\s*")
 _KOREAN_HEDGE_PHRASES = (
+    "아마",
     "혹시",
     "것 같",
-    "제가 틀릴",
-    "다름이 아니라",
+    "내가 틀",
+    "제가 틀",
+    "다름이 아니",
+    "다른 게 아니",
     "괜찮다면",
     "괜찮으시면",
     "괜찮으시다면",
@@ -270,66 +273,41 @@ _KOREAN_HEDGE_APOLOGY_PHRASES = (
     "죄송합니다",
 )
 _KOREAN_HEDGE_REASSURANCE_PHRASES = (
-    "별 건 아니고",
-    "별 거 아니야",
-    "별 거 아니에요",
-    "별 일 아니야",
-    "별 일은 아니고",
+    "별 건 아니",
+    "별 거 아니",
+    "별 일 아니",
+    "별 일은 아니",
+    "별건 아니",
+    "별거 아니",
+    "별일 아니",
+    "별일은 아니",
+    "괜찮",
 )
 _KOREAN_HEDGE_TRANSITIONS = (
     "사실은",
+    "사실 ",
     "솔직히",
     "솔직하게 말하면",
+    "어쩌면",
+    "혹시",
 )
 _KOREAN_HEDGE_TAG_QUESTIONS = (
-    "혹시",
+    # fillers not questions
     "그냥",
+    "괜히",
+    "되게",
+    "약간",
+    "조금",
+    "좀",
+    "도저히",
 )
-_KOREAN_EMOTION_FALLBACK_WORDS = {
-    "걱정",
-    "기쁘",
-    "답답",
-    "무섭",
-    "불안",
-    "슬프",
-    "외롭",
-    "우울",
-    "짜증",
-    "지쳤",
-    "행복",
-    "힘들",
-    "화나",
-}
 _KOREAN_SUBSTANCE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
-        "self_expression",
-        re.compile(
-            r"((?:나는|난|저는|전|내가|제가)\s+(?:정말|너무|좀|조금|많이)?\s*(?:"
-            r"걱정[^\s,.!?]*|기쁘[^\s,.!?]*|답답[^\s,.!?]*|무섭[^\s,.!?]*|불안[^\s,.!?]*|"
-            r"슬프[^\s,.!?]*|외롭[^\s,.!?]*|우울[^\s,.!?]*|짜증[^\s,.!?]*|지쳤[^\s,.!?]*|"
-            r"행복[^\s,.!?]*|힘들[^\s,.!?]*|화나[^\s,.!?]*))"
-        ),
-        "Uses first-person emotion phrasing",
-    ),
-    (
-        "self_expression",
-        re.compile(
-            r"((?:기분|마음)이\s+(?:정말|너무|좀|조금|많이)?\s*(?:"
-            r"걱정[^\s,.!?]*|기쁘[^\s,.!?]*|답답[^\s,.!?]*|무섭[^\s,.!?]*|불안[^\s,.!?]*|"
-            r"슬프[^\s,.!?]*|외롭[^\s,.!?]*|우울[^\s,.!?]*|짜증[^\s,.!?]*|지쳤[^\s,.!?]*|"
-            r"행복[^\s,.!?]*|힘들[^\s,.!?]*|화나[^\s,.!?]*))"
-        ),
-        "Uses feeling-state phrasing",
-    ),
-    (
         "i_want",
-        re.compile(r"((?:나는|난|저는|전|내가|제가)[^.?!,;]{0,24}?(?:원해|원해요|원한다|원했어|원했어요))"),
+        re.compile(
+            r"((?:고\s*싶[^\s,.!?]*|기\s*싫[^\s,.!?]*|원(?:하|해|했)[^\s,.!?]*|바(?:래|랬|라|랐)[^\s,.!?]*|면\s*좋[^\s,.!?]*))"
+        ),
         "Expresses a personal want",
-    ),
-    (
-        "i_dont_know",
-        re.compile(r"((?:잘\s*모르겠(?:어|어요|습니다)|모르겠(?:어|어요|습니다)))"),
-        "Expresses uncertainty directly",
     ),
 )
 
@@ -365,9 +343,6 @@ class HeuristicAnalysisProvider(AnalysisProvider):
             else:
                 results.append(
                     SentenceAnalysis(
-                        politeness_score=0.5,
-                        semantic_confidence_score=0.5,
-                        main_message_likelihood=0.5,
                         analysis_payload=_unsupported_language_analysis_payload(language_code),
                     )
                 )
@@ -419,9 +394,6 @@ def _unsupported_language_analysis_payload(language_code: str | None) -> dict:
 def _analyze_sentence_english(sentence: SentenceCandidate, language_code: str | None) -> SentenceAnalysis:
     normalized = _normalize_text(sentence.text)
     return SentenceAnalysis(
-        politeness_score=0.5,
-        semantic_confidence_score=0.5,
-        main_message_likelihood=0.5,
         analysis_payload=_build_analysis_payload(
             language_code=language_code,
             language_supported=True,
@@ -434,9 +406,6 @@ def _analyze_sentence_english(sentence: SentenceCandidate, language_code: str | 
 def _analyze_sentence_korean(sentence: SentenceCandidate, language_code: str | None) -> SentenceAnalysis:
     normalized = _normalize_text_korean(sentence.text)
     return SentenceAnalysis(
-        politeness_score=0.5,
-        semantic_confidence_score=0.5,
-        main_message_likelihood=0.5,
         analysis_payload=_build_analysis_payload(
             language_code=language_code,
             language_supported=True,
@@ -572,9 +541,52 @@ def _nrc_emolex_korean_candidate_paths() -> list[Path]:
     if env_path:
         candidates.append(Path(env_path))
 
-    repo_root = Path(__file__).resolve().parents[3]
-    candidates.append(repo_root / ".lexicons" / "nrc_emolex_ko" / _NRC_EMOLEX_KO_FILENAME)
+    candidates.append(Path(__file__).resolve().with_name(_KOREAN_EMOTION_WORDS_FILENAME))
     return candidates
+
+
+def _parse_korean_emolex_row(parts: list[str]) -> set[str]:
+    if len(parts) == 1:
+        term = parts[0].strip()
+        return {term} if term else set()
+
+    if len(parts) == 3:
+        term, label, association = parts
+        normalized_term = term.strip()
+        normalized_label = label.strip().lower()
+        normalized_association = association.strip()
+        if (
+            not normalized_term
+            or normalized_label not in _SUBSTANCE_EMOTION_LABELS
+            or normalized_association != "1"
+        ):
+            return set()
+        return {normalized_term}
+
+    if len(parts) == 12:
+        row = {
+            "english_word": parts[0].strip(),
+            "anger": parts[1].strip(),
+            "anticipation": parts[2].strip(),
+            "disgust": parts[3].strip(),
+            "fear": parts[4].strip(),
+            "joy": parts[5].strip(),
+            "negative": parts[6].strip(),
+            "positive": parts[7].strip(),
+            "sadness": parts[8].strip(),
+            "surprise": parts[9].strip(),
+            "trust": parts[10].strip(),
+            "korean_word": parts[11].strip(),
+        }
+        if row["english_word"].lower() == "english word":
+            return set()
+        if not row["korean_word"]:
+            return set()
+        if any(row[label] == "1" for label in _SUBSTANCE_EMOTION_LABELS):
+            return {row["korean_word"]}
+        return set()
+
+    return set()
 
 
 def _emotion_word_matches(normalized_text: str) -> list[str]:
@@ -599,26 +611,12 @@ def _load_korean_emotion_words() -> set[str]:
                 continue
 
             parts = line.split("\t")
-            if len(parts) != 3:
-                continue
-
-            term, label, association = parts
-            normalized_term = term.strip()
-            normalized_label = label.strip().lower()
-            normalized_association = association.strip()
-            if (
-                not normalized_term
-                or normalized_label not in _SUBSTANCE_EMOTION_LABELS
-                or normalized_association != "1"
-            ):
-                continue
-
-            lexicon.add(normalized_term)
+            lexicon.update(_parse_korean_emolex_row(parts))
 
         if lexicon:
             return lexicon
 
-    return set(_KOREAN_EMOTION_FALLBACK_WORDS)
+    return set()
 
 
 def _emotion_word_matches_korean(normalized_text: str) -> list[str]:
@@ -832,10 +830,6 @@ def _lookup_nltk_emotion_modifier_pos(word: str) -> tuple[bool, bool, bool] | No
         return None
 
     return (bool(adjective_synsets), bool(adverb_synsets), bool(verb_synsets))
-
-
-def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
-    return max(minimum, min(maximum, value))
 
 
 def _heuristic_hedging(text: str, normalized_text: str) -> dict:

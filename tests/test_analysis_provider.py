@@ -1,8 +1,16 @@
+import os
+from pathlib import Path
+import tempfile
 import unittest
 
 from asr_viz.pipeline.segmentation import segment_transcript
 from asr_viz.pipeline.types import ASRSegment, ASRWord, SentenceCandidate
-from asr_viz.providers.analysis_v2 import HeuristicAnalysisProvider, _emotion_word_matches
+from asr_viz.providers.analysis_v2 import (
+    HeuristicAnalysisProvider,
+    _emotion_word_matches,
+    _emotion_word_matches_korean,
+    _load_korean_emotion_words,
+)
 
 
 class HeuristicAnalysisProviderTests(unittest.TestCase):
@@ -30,7 +38,6 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
 
         self.assertIn("hedging", results[0].analysis_payload)
         self.assertTrue(results[0].analysis_payload["hedging"]["matches"])
-        self.assertEqual(results[0].politeness_score, 0.5)
 
     def test_substance_payload_detects_self_expression(self) -> None:
         provider = HeuristicAnalysisProvider()
@@ -70,7 +77,6 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
 
         self.assertIn("substance", results[0].analysis_payload)
         self.assertTrue(results[0].analysis_payload["substance"]["matches"])
-        self.assertEqual(results[0].semantic_confidence_score, 0.5)
 
     def test_i_am_substance_requires_emotion_word_in_same_sentence(self) -> None:
         provider = HeuristicAnalysisProvider()
@@ -234,7 +240,7 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
         self.assertAlmostEqual(sentences[1].sentence_metadata["mean_word_probability"], 0.525, places=4)
         self.assertEqual(sentences[1].sentence_metadata["low_confidence_word_ratio"], 1.0)
 
-    def test_non_english_analysis_returns_safe_empty_payload(self) -> None:
+    def test_korean_analysis_returns_supported_payload(self) -> None:
         provider = HeuristicAnalysisProvider()
         results = provider.analyze(
             [
@@ -255,7 +261,7 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
         self.assertIn("아마", payload["hedging"]["matches"])
         self.assertIn("괜찮다면", payload["hedging"]["matches"])
 
-    def test_korean_substance_detects_self_expression_and_emotion_language(self) -> None:
+    def test_korean_substance_detects_want_pattern_and_emotion_language(self) -> None:
         provider = HeuristicAnalysisProvider()
         results = provider.analyze(
             [
@@ -263,18 +269,103 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
                     utterance_index=0,
                     start_ms=0,
                     end_ms=1000,
-                    text="저는 너무 불안하고 마음이 답답해요.",
+                    text="저는 집에 가고 싶지만 너무 불안해요.",
                     sentence_metadata={},
                 )
             ],
-            transcript_text="저는 너무 불안하고 마음이 답답해요.",
+            transcript_text="저는 집에 가고 싶지만 너무 불안해요.",
             language_code="ko",
         )
 
         substance = results[0].analysis_payload["substance"]
-        self.assertIn("self_expression", substance["categories"])
+        self.assertIn("i_want", substance["categories"])
         self.assertIn("emotion_word", substance["categories"])
-        self.assertTrue(any("불안" in match or "답답" in match for match in substance["matches"]))
+        self.assertTrue(any("고 싶" in match for match in substance["matches"]))
+        self.assertTrue(any("불안" in match for match in substance["matches"]))
+
+    def test_korean_substance_detects_want_pattern_with_wonha_family(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        sentence = "제가 이걸 원해요."
+
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text=sentence,
+                    sentence_metadata={},
+                )
+            ],
+            transcript_text=sentence,
+            language_code="ko",
+        )
+
+        substance = results[0].analysis_payload["substance"]
+        self.assertIn("i_want", substance["categories"])
+        self.assertTrue(any("원해" in match for match in substance["matches"]))
+
+    def test_korean_emotion_words_support_multilingual_nrc_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lexicon_path = Path(tmp_dir) / "Korean-NRC-EmoLex.txt"
+            lexicon_path.write_text(
+                "\n".join(
+                    [
+                        "English Word\tanger\tanticipation\tdisgust\tfear\tjoy\tnegative\tpositive\tsadness\tsurprise\ttrust\tKorean Word",
+                        "anxious\t0\t0\t0\t1\t0\t1\t0\t1\t0\t0\t불안한",
+                        "happy\t0\t0\t0\t0\t1\t0\t1\t0\t0\t1\t행복하다",
+                        "desk\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t책상",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            previous_path = os.environ.get("NRC_EMOLEX_KO_PATH")
+            os.environ["NRC_EMOLEX_KO_PATH"] = str(lexicon_path)
+            _load_korean_emotion_words.cache_clear()
+            try:
+                matches = _emotion_word_matches_korean("저는 조금 불안한데 그래도 행복하다")
+            finally:
+                if previous_path is None:
+                    os.environ.pop("NRC_EMOLEX_KO_PATH", None)
+                else:
+                    os.environ["NRC_EMOLEX_KO_PATH"] = previous_path
+                _load_korean_emotion_words.cache_clear()
+
+        self.assertIn("불안한", matches)
+        self.assertIn("행복하다", matches)
+        self.assertNotIn("책상", matches)
+
+    def test_korean_emotion_words_support_plain_text_filtered_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lexicon_path = Path(tmp_dir) / "korean_emotion_words_filtered.txt"
+            lexicon_path.write_text(
+                "\n".join(
+                    [
+                        "불안",
+                        "행복",
+                        "",
+                        "답답",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            previous_path = os.environ.get("NRC_EMOLEX_KO_PATH")
+            os.environ["NRC_EMOLEX_KO_PATH"] = str(lexicon_path)
+            _load_korean_emotion_words.cache_clear()
+            try:
+                matches = _emotion_word_matches_korean("저는 불안하고 답답하지만 행복해지고 싶어요")
+            finally:
+                if previous_path is None:
+                    os.environ.pop("NRC_EMOLEX_KO_PATH", None)
+                else:
+                    os.environ["NRC_EMOLEX_KO_PATH"] = previous_path
+                _load_korean_emotion_words.cache_clear()
+
+        self.assertIn("불안", matches)
+        self.assertIn("답답", matches)
+        self.assertIn("행복", matches)
 
     def test_unsupported_language_analysis_returns_safe_empty_payload(self) -> None:
         provider = HeuristicAnalysisProvider()

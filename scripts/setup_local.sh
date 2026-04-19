@@ -9,6 +9,7 @@ ENV_TEMPLATE="$ROOT_DIR/.env.local.example"
 ENV_FILE="$ROOT_DIR/.env.local"
 WORDNET_ZIP="$ROOT_DIR/.nltk_data/corpora/wordnet.zip"
 NRC_EMOLEX="$ROOT_DIR/.lexicons/nrc_emolex/NRC-Emotion-Lexicon-Wordlevel-v0.92.txt"
+KOREAN_EMOTION_WORDS="$ROOT_DIR/src/asr_viz/providers/korean_emotion_words_filtered.txt"
 
 load_env_file() {
   local file="$1"
@@ -89,7 +90,7 @@ echo "Installing backend dependencies"
 "$VENV_PYTHON" -m pip install --upgrade pip
 "$VENV_PYTHON" -m pip install -e "$ROOT_DIR[transcription,diarization]"
 
-if [ -f "$WORDNET_ZIP" ] && [ -f "$NRC_EMOLEX" ]; then
+if [ -f "$WORDNET_ZIP" ] && [ -f "$NRC_EMOLEX" ] && [ -f "$KOREAN_EMOTION_WORDS" ]; then
   echo "Verified bundled analysis lexicon resources"
 else
   echo "Warning: analysis lexicon resources are missing; emotion-word matching may be incomplete." >&2

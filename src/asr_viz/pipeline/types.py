@@ -66,9 +66,9 @@ class SentenceCandidate(BaseModel):
 class SentenceAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    politeness_score: float = Field(ge=0.0, le=1.0)
-    semantic_confidence_score: float = Field(ge=0.0, le=1.0)
-    main_message_likelihood: float = Field(ge=0.0, le=1.0)
+    politeness_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    semantic_confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    main_message_likelihood: float = Field(default=0.5, ge=0.0, le=1.0)
     analysis_payload: dict = Field(default_factory=dict)
 
 

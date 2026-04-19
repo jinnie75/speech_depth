@@ -14,6 +14,8 @@ from asr_viz.providers.transcription import TranscriptionProvider
 from asr_viz.services.archive_previews import update_transcript_archive_preview
 from asr_viz.services.media import resolve_media_source
 
+_SINGLE_SPEAKER_ID = "SPEAKER_00"
+
 
 class ProcessingPipeline:
     def __init__(
@@ -54,17 +56,20 @@ class ProcessingPipeline:
         try:
             source_uri = resolve_media_source(job, job.media_asset)
             preferred_language = _preferred_language_override(job.media_asset.ingest_metadata)
+            speaker_count_override = _speaker_count_override(job.media_asset.ingest_metadata)
+            should_run_diarization = job.diarization_enabled and speaker_count_override != 1
             transcript_result = self._transcription_provider.transcribe(
                 source_uri,
                 preferred_language=preferred_language,
             )
             job.asr_model_version = self._transcription_provider.model_version
-            job.current_stage = JobStage.DIARIZATION.value if job.diarization_enabled else JobStage.ANALYSIS.value
+            job.current_stage = JobStage.DIARIZATION.value if should_run_diarization else JobStage.ANALYSIS.value
             job.stage_details = {
                 **job.stage_details,
                 "segments": len(transcript_result.segments),
                 "resolved_source_uri": source_uri,
                 "preferred_language": preferred_language or "auto",
+                "requested_num_speakers": speaker_count_override,
             }
 
             transcript = Transcript(
@@ -96,8 +101,7 @@ class ProcessingPipeline:
                 transcript_result.segments,
                 language_code=transcript_result.language_code,
             )
-            if job.diarization_enabled:
-                speaker_count_override = _speaker_count_override(job.media_asset.ingest_metadata)
+            if should_run_diarization:
                 sentences = self._diarization_provider.assign_speakers(
                     sentences,
                     source_uri,
@@ -108,7 +112,14 @@ class ProcessingPipeline:
                     **job.stage_details,
                     "diarization_enabled": True,
                     "speaker_count": len({sentence.speaker_id for sentence in sentences if sentence.speaker_id}),
-                    "requested_num_speakers": speaker_count_override,
+                }
+            elif job.diarization_enabled and speaker_count_override == 1:
+                sentences = _assign_single_speaker(sentences)
+                job.stage_details = {
+                    **job.stage_details,
+                    "diarization_enabled": False,
+                    "diarization_skipped": True,
+                    "diarization_skip_reason": "single_speaker",
                 }
 
             sentence_units: list[SentenceUnit] = []
@@ -201,3 +212,10 @@ def _preferred_language_override(ingest_metadata: dict | None) -> str | None:
     if preferred_language in {"auto", "en", "ko"}:
         return preferred_language
     return None
+
+
+def _assign_single_speaker(sentences: list[SentenceCandidate]) -> list[SentenceCandidate]:
+    return [
+        sentence.model_copy(update={"speaker_id": _SINGLE_SPEAKER_ID})
+        for sentence in sentences
+    ]

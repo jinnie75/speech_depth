@@ -10,10 +10,27 @@ from asr_viz.models.analysis import AnalysisResult
 from asr_viz.models.job import ProcessingJob
 from asr_viz.models.transcript import SentenceUnit, Transcript
 from asr_viz.providers.analysis_v2 import HeuristicAnalysisProvider
-from asr_viz.providers.diarization import NoOpDiarizationProvider
+from asr_viz.providers.diarization import DiarizationProvider, NoOpDiarizationProvider
 from asr_viz.providers.transcription import MockTranscriptionProvider
 from asr_viz.services.jobs import create_job
 from asr_viz.services.pipeline import ProcessingPipeline, _speaker_count_override
+
+
+class RecordingDiarizationProvider(DiarizationProvider):
+    model_version = "recording-diarizer:v1"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int | None]] = []
+
+    def assign_speakers(
+        self,
+        sentences,
+        source_uri: str,
+        *,
+        num_speakers_override: int | None = None,
+    ):
+        self.calls.append((source_uri, num_speakers_override))
+        return sentences
 
 
 class PipelineTests(unittest.TestCase):
@@ -121,3 +138,51 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(analysis_results[0].analysis_payload["language_supported"])
             self.assertIn("hedging", analysis_results[0].analysis_payload)
             self.assertIn("substance", analysis_results[0].analysis_payload)
+
+    def test_pipeline_skips_diarization_for_single_speaker_jobs(self) -> None:
+        tmp_path = Path(self._testMethodName)
+        tmp_path.mkdir(exist_ok=True)
+        source = tmp_path / "monologue.txt"
+        source.write_text("I have one thing to say.\nThis is still the same speaker.", encoding="utf-8")
+
+        self.addCleanup(lambda: shutil.rmtree(tmp_path, ignore_errors=True))
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        diarization_provider = RecordingDiarizationProvider()
+        pipeline = ProcessingPipeline(
+            transcription_provider=MockTranscriptionProvider(),
+            analysis_provider=HeuristicAnalysisProvider(),
+            diarization_provider=diarization_provider,
+        )
+
+        with session_factory() as session:
+            create_job(
+                session,
+                source_uri=str(source),
+                source_type="file",
+                diarization_enabled=True,
+                mime_type="text/plain",
+                checksum=None,
+                ingest_metadata={"speaker_mode": "monologue"},
+            )
+
+        with session_factory() as session:
+            claimed_job = pipeline.claim_next_job(session)
+            self.assertIsNotNone(claimed_job)
+            result_job = pipeline.process_job(session, claimed_job.id)
+            self.assertEqual(result_job.status, "completed")
+
+        with session_factory() as session:
+            sentence_units = session.scalars(select(SentenceUnit).order_by(SentenceUnit.utterance_index.asc())).all()
+            job = session.scalar(select(ProcessingJob))
+
+            self.assertEqual(diarization_provider.calls, [])
+            self.assertIsNotNone(job)
+            self.assertEqual(job.diarization_model_version, None)
+            self.assertEqual(job.stage_details["requested_num_speakers"], 1)
+            self.assertEqual(job.stage_details["diarization_skipped"], True)
+            self.assertEqual(job.stage_details["diarization_skip_reason"], "single_speaker")
+            self.assertEqual(job.stage_details["diarization_enabled"], False)
+            self.assertTrue(all(sentence.speaker_id == "SPEAKER_00" for sentence in sentence_units))

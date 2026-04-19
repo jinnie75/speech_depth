@@ -253,3 +253,58 @@ class TranscriptReviewApiTests(unittest.TestCase):
 
         transcript_response = client.get(f"/transcripts/{transcript_id}")
         self.assertEqual(transcript_response.status_code, 404)
+
+    def test_patch_review_allows_naming_single_default_speaker(self) -> None:
+        with self.session_factory() as session:
+            media_asset = MediaAsset(
+                source_type="file",
+                source_uri=str(Path(self.temp_dir.name) / "monologue.mp4"),
+                mime_type="video/mp4",
+                checksum="mono-checksum",
+                ingest_metadata={"speaker_mode": "monologue"},
+            )
+            session.add(media_asset)
+            session.flush()
+
+            transcript = Transcript(
+                media_asset_id=media_asset.id,
+                language_code="en",
+                full_text="Only one speaker here.",
+                transcript_metadata={},
+            )
+            session.add(transcript)
+            session.flush()
+
+            sentence = SentenceUnit(
+                transcript_id=transcript.id,
+                utterance_index=0,
+                start_ms=0,
+                end_ms=1000,
+                text="Only one speaker here.",
+                speaker_id="SPEAKER_00",
+                speaker_confidence=None,
+                source_segment_ids=[0],
+                sentence_metadata={},
+            )
+            session.add(sentence)
+            session.commit()
+            single_speaker_transcript_id = transcript.id
+
+        client = TestClient(api_main.app)
+
+        response = client.patch(
+            f"/transcripts/{single_speaker_transcript_id}/review",
+            json={
+                "conversation_title": "Monologue",
+                "speaker_labels": {
+                    "SPEAKER_00": "Jinhee",
+                },
+                "review_status": "in_progress",
+                "sentence_overrides": [],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["speaker_labels"]["SPEAKER_00"], "Jinhee")
+        self.assertEqual(payload["sentence_units"][0]["display_speaker_id"], "SPEAKER_00")
