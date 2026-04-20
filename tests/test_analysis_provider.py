@@ -39,6 +39,28 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
         self.assertIn("hedging", results[0].analysis_payload)
         self.assertTrue(results[0].analysis_payload["hedging"]["matches"])
 
+    def test_hedging_payload_does_not_treat_repeated_words_as_hedges(self) -> None:
+        provider = HeuristicAnalysisProvider()
+        sentence = "It's not plie plie and not arabesque arabesque."
+
+        results = provider.analyze(
+            [
+                SentenceCandidate(
+                    utterance_index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text=sentence,
+                    sentence_metadata={"source_segment_count": 1, "mean_word_probability": 0.95},
+                )
+            ],
+            transcript_text=sentence,
+        )
+
+        hedging = results[0].analysis_payload["hedging"]
+        self.assertEqual(hedging["categories"], [])
+        self.assertEqual(hedging["matches"], [])
+        self.assertEqual(hedging["rules"], [])
+
     def test_substance_payload_detects_self_expression(self) -> None:
         provider = HeuristicAnalysisProvider()
         results = provider.analyze(

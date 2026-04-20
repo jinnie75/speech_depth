@@ -8,7 +8,7 @@ import re
 
 from asr_viz.pipeline.types import SentenceAnalysis, SentenceCandidate
 
-_HEURISTIC_VERSION = 10
+_HEURISTIC_VERSION = 11
 _WORD_RE = re.compile(r"[a-z']+")
 _HEDGE_PHRASES = (
     "maybe",
@@ -479,16 +479,6 @@ def _matching_clause(original_text: str, match: str) -> str:
     return original_text.strip()
 
 
-def _repeated_word_pair_matches(tokens: list[str]) -> list[str]:
-    matches: list[str] = []
-    for left, right in zip(tokens, tokens[1:]):
-        if left == right:
-            pair = f"{left} {right}"
-            if pair not in matches:
-                matches.append(pair)
-    return matches
-
-
 @lru_cache(maxsize=1)
 def _load_nrc_emolex() -> dict[str, set[str]]:
     for path in _nrc_emolex_candidate_paths():
@@ -833,7 +823,6 @@ def _lookup_nltk_emotion_modifier_pos(word: str) -> tuple[bool, bool, bool] | No
 
 
 def _heuristic_hedging(text: str, normalized_text: str) -> dict:
-    tokens = _tokenize(normalized_text)
     hedge_phrase_matches = _matched_phrases(normalized_text, _HEDGE_PHRASES)
     apology_matches = _matched_phrases(normalized_text, _HEDGE_APOLOGY_PHRASES)
     reassurance_matches = _matched_phrases(normalized_text, _HEDGE_REASSURANCE_PHRASES)
@@ -871,15 +860,6 @@ def _heuristic_hedging(text: str, normalized_text: str) -> dict:
         match_fragments.append("...")
         excerpt_fragments.append(clause)
         rationale_parts.append('trailing_incomplete matched "..." in clause "{0}"'.format(clause))
-
-    for match in _repeated_word_pair_matches(tokens):
-        clause = _matching_clause(text, match)
-        rules.append({"rule": "repeated_word_pair", "match": match, "clause": clause})
-        if "repeated_word_pair" not in categories:
-            categories.append("repeated_word_pair")
-        match_fragments.append(match)
-        excerpt_fragments.append(clause)
-        rationale_parts.append(f'repeated_word_pair matched "{match}" in clause "{clause}"')
 
     if not rules:
         return {

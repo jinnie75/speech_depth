@@ -2652,34 +2652,6 @@ export function App() {
           </header>
 
           <section className="onboarding-stack">
-            <article className="surface-card onboarding-choice onboarding-choice--live">
-              <div className="onboarding-choice__header">
-                <h2>Start a live session</h2>
-              </div>
-              <div className="live-launch">
-                <p className="surface-note">
-                  Record from your microphone, get rolling transcript updates in the browser, and drop straight into the review flow when you stop.
-                </p>
-                <div className="live-launch__actions">
-                  <button
-                    type="button"
-                    className="submit-upload"
-                    onClick={() => void handleStartLiveSession()}
-                    disabled={!liveCaptureSupported || liveCaptureState !== "idle"}
-                  >
-                    Start live capture
-                  </button>
-                  <p className="live-launch__support">
-                    {liveCaptureSupported && liveTranscriptionSupported
-                      ? "Mic capture and browser speech recognition are available."
-                      : liveCaptureSupported
-                        ? "Mic capture is available. If browser speech recognition is blocked, you can still record and add manual transcript lines."
-                        : "This browser does not expose microphone capture for the live MVP."}
-                  </p>
-                </div>
-              </div>
-            </article>
-
             <article className="surface-card onboarding-choice onboarding-choice--upload">
               <div className="onboarding-choice__header">
                 <h2>Upload a file</h2>
@@ -2743,6 +2715,34 @@ export function App() {
                   </div>
                 </div>
               )}
+            </article>
+
+            <article className="surface-card onboarding-choice onboarding-choice--live">
+              <div className="onboarding-choice__header">
+                <h2>Start a live session</h2>
+              </div>
+              <div className="live-launch">
+                <p className="surface-note">
+                  Record from your microphone, get rolling transcript updates in the browser, and drop straight into the review flow when you stop.
+                </p>
+                <div className="live-launch__actions">
+                  <button
+                    type="button"
+                    className="submit-upload"
+                    onClick={() => void handleStartLiveSession()}
+                    disabled={!liveCaptureSupported || liveCaptureState !== "idle"}
+                  >
+                    Start live capture
+                  </button>
+                  <p className="live-launch__support">
+                    {liveCaptureSupported && liveTranscriptionSupported
+                      ? "Mic capture and browser speech recognition are available."
+                      : liveCaptureSupported
+                        ? "Mic capture is available. If browser speech recognition is blocked, you can still record and add manual transcript lines."
+                        : "This browser does not expose microphone capture for the live MVP."}
+                  </p>
+                </div>
+              </div>
             </article>
           </section>
         </section>

@@ -88,6 +88,21 @@ interface SpeakerCluster {
   utteranceCount: number;
 }
 
+interface ContourStrokeLayer {
+  d: string;
+  dx: number;
+  dy: number;
+  width: number;
+  opacity: number;
+}
+
+interface ContourPath {
+  id: string;
+  level: number;
+  d: string;
+  layers: ContourStrokeLayer[];
+}
+
 interface SpeakerSection {
   speaker: ConversationLandscapeSpeaker;
   region: SpeakerRegion;
@@ -96,7 +111,7 @@ interface SpeakerSection {
   levelCount: number;
   washHref: string | null;
   labelPoint: Point;
-  paths: { level: number; d: string }[];
+  paths: ContourPath[];
 }
 
 interface WordPosition {
@@ -167,6 +182,18 @@ const SPEAKER_COLORS = ["#0a8f87", "#8a4c1b", "#d26f1b", "#73586d"];
 const SPEAKER_OUTER_COLORS = ["#a7dbd6", "#d8b59b", "#f1c59f", "#c6b2c0"];
 const MARGIN_NOTE_SLOT_COLUMNS = [0.2, 0.5, 0.8];
 const MARGIN_NOTE_SLOT_ROWS = [0.62, 0.71, 0.8, 0.89];
+const CONTOUR_STROKE_BASE_WIDTH = 1.42;
+const CONTOUR_STROKE_INNER_WIDTH = 2.1;
+const CONTOUR_STROKE_OUTER_WIDTH = 3.35;
+const CONTOUR_STROKE_ACCENT_WIDTH = 1.18;
+const CONTOUR_STROKE_OFFSET_X = 1.15;
+const CONTOUR_STROKE_OFFSET_Y = 1.45;
+const CONTOUR_STROKE_CORE_OPACITY = 0.94;
+const CONTOUR_STROKE_UNDERLAY_OPACITY = 0.34;
+const CONTOUR_STROKE_ACCENT_OPACITY = 0.58;
+const CONTOUR_STROKE_ROUGHNESS_UNDERLAY = 2.2;
+const CONTOUR_STROKE_ROUGHNESS_CORE = 1.1;
+const CONTOUR_STROKE_ROUGHNESS_ACCENT = 1.6;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -695,6 +722,83 @@ function getContourStroke(pathIndex: number, pathCount: number, outerColor: stri
 
   const innerness = pathIndex / (pathCount - 1);
   return mixColors(outerColor, innerColor, innerness);
+}
+
+function getContourStrokeOpacity(pathIndex: number, pathCount: number): number {
+  return lerp(0.76, 0.98, pathCount <= 1 ? 1 : pathIndex / (pathCount - 1));
+}
+
+function formatSvgNumber(value: number): string {
+  return value.toFixed(2);
+}
+
+function buildHandDrawnContourPath(pathData: string, variantId: string, roughness: number): string {
+  const phase = hashUnit(`${variantId}-phase`) * Math.PI * 2;
+  let pointIndex = 0;
+
+  return pathData.replace(/([ML]) (-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, (_, command: string, xText: string, yText: string) => {
+    const x = Number.parseFloat(xText);
+    const y = Number.parseFloat(yText);
+    const flow = 0.62 + 0.38 * Math.sin(pointIndex * 0.58 + phase);
+    const grain = 0.75 + 0.25 * Math.cos(pointIndex * 0.31 + phase * 0.7);
+    const commandSoftening = command === "M" ? 0.72 : 1;
+    const jitterX =
+      (
+        hashSigned(`${variantId}-x-${pointIndex}`) * 0.72 +
+        Math.sin(pointIndex * 0.92 + phase) * 0.28
+      ) *
+      roughness *
+      flow *
+      grain *
+      commandSoftening;
+    const jitterY =
+      (
+        hashSigned(`${variantId}-y-${pointIndex}`) * 0.72 +
+        Math.cos(pointIndex * 0.86 + phase * 1.13) * 0.28
+      ) *
+      roughness *
+      flow *
+      grain *
+      commandSoftening;
+    pointIndex += 1;
+
+    return `${command} ${formatSvgNumber(x + jitterX)} ${formatSvgNumber(y + jitterY)}`;
+  });
+}
+
+function buildContourStrokeLayers(pathId: string, pathIndex: number, pathCount: number, pathData: string): ContourStrokeLayer[] {
+  const innerness = pathCount <= 1 ? 1 : pathIndex / (pathCount - 1);
+  const contourWeight = lerp(1.12, 0.9, innerness);
+
+  return [
+    {
+      d: buildHandDrawnContourPath(pathData, `${pathId}-underlay`, CONTOUR_STROKE_ROUGHNESS_UNDERLAY),
+      dx: hashSigned(`${pathId}-underlay-dx`) * CONTOUR_STROKE_OFFSET_X,
+      dy: hashSigned(`${pathId}-underlay-dy`) * CONTOUR_STROKE_OFFSET_Y,
+      width:
+        contourWeight * (CONTOUR_STROKE_OUTER_WIDTH + hashUnit(`${pathId}-underlay-width`) * 0.38),
+      opacity: CONTOUR_STROKE_UNDERLAY_OPACITY,
+    },
+    {
+      d: buildHandDrawnContourPath(pathData, `${pathId}-core`, CONTOUR_STROKE_ROUGHNESS_CORE),
+      dx: hashSigned(`${pathId}-core-dx`) * CONTOUR_STROKE_OFFSET_X * 0.45,
+      dy: hashSigned(`${pathId}-core-dy`) * CONTOUR_STROKE_OFFSET_Y * 0.45,
+      width:
+        contourWeight *
+        (CONTOUR_STROKE_BASE_WIDTH +
+          lerp(CONTOUR_STROKE_INNER_WIDTH - CONTOUR_STROKE_BASE_WIDTH, 0, innerness) +
+          hashUnit(`${pathId}-core-width`) * 0.24),
+      opacity: CONTOUR_STROKE_CORE_OPACITY,
+    },
+    {
+      d: buildHandDrawnContourPath(pathData, `${pathId}-accent`, CONTOUR_STROKE_ROUGHNESS_ACCENT),
+      dx: hashSigned(`${pathId}-accent-dx`) * CONTOUR_STROKE_OFFSET_X * 0.68,
+      dy: hashSigned(`${pathId}-accent-dy`) * CONTOUR_STROKE_OFFSET_Y * 0.68,
+      width:
+        contourWeight * (CONTOUR_STROKE_ACCENT_WIDTH + hashUnit(`${pathId}-accent-width`) * 0.18),
+      opacity: CONTOUR_STROKE_ACCENT_OPACITY,
+    },
+  ];
 }
 
 function createGrid(): number[][] {
@@ -1407,10 +1511,16 @@ function buildLandscapeSections(
       washHref: buildFieldWashDataUrl(separatedField, maxFieldValue, color, outerColor),
       labelPoint: getSpeakerLabelPoint(separatedField, maxFieldValue, region),
       paths: levels
-        .map((level) => ({
-          level,
-          d: buildContourPath(separatedField, level),
-        }))
+        .map((level, levelIndex) => {
+          const d = buildContourPath(separatedField, level);
+          const pathId = `${speaker.id}-contour-${levelIndex}-${Math.round(level * 1000)}`;
+          return {
+            id: pathId,
+            level,
+            d,
+            layers: buildContourStrokeLayers(pathId, levelIndex, levels.length, d),
+          };
+        })
         .filter((path) => path.d.length > 0),
     });
   });
@@ -1534,9 +1644,13 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
               : "";
             const pathMarkup = paths
               .map(
-                (path, pathIndex) => `<path d="${escapeXml(path.d)}" fill="none" stroke="${escapeXml(
-                  getContourStroke(pathIndex, paths.length, outerColor, color),
-                )}" stroke-opacity="${lerp(0.76, 0.98, paths.length <= 1 ? 1 : pathIndex / (paths.length - 1))}" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" />`,
+                (path, pathIndex) => path.layers
+                  .map((layer) => `<path d="${escapeXml(layer.d)}" fill="none" stroke="${escapeXml(
+                    getContourStroke(pathIndex, paths.length, outerColor, color),
+                  )}" stroke-opacity="${formatSvgNumber(
+                    getContourStrokeOpacity(pathIndex, paths.length) * layer.opacity,
+                  )}" stroke-width="${formatSvgNumber(layer.width)}" stroke-linecap="round" stroke-linejoin="round" transform="translate(${formatSvgNumber(layer.dx)} ${formatSvgNumber(layer.dy)})" />`)
+                  .join(""),
               )
               .join("");
             return `${washMarkup}<g opacity="${speaker.opacity}">${pathMarkup}</g>`;
@@ -1924,18 +2038,21 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
           )}
           {speakerSections.map(({ speaker, color, outerColor, paths }) => (
             <g key={speaker.id} opacity={speaker.opacity}>
-              {paths.map((path, pathIndex) => (
-                <path
-                  key={`${speaker.id}-${pathIndex}`}
-                  d={path.d}
-                  fill="none"
-                  stroke={getContourStroke(pathIndex, paths.length, outerColor, color)}
-                  strokeOpacity={lerp(0.76, 0.98, paths.length <= 1 ? 1 : pathIndex / (paths.length - 1))}
-                  strokeWidth={1.45}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              ))}
+              {paths.flatMap((path, pathIndex) =>
+                path.layers.map((layer, layerIndex) => (
+                  <path
+                    key={`${path.id}-${layerIndex}`}
+                    d={layer.d}
+                    fill="none"
+                    stroke={getContourStroke(pathIndex, paths.length, outerColor, color)}
+                    strokeOpacity={getContourStrokeOpacity(pathIndex, paths.length) * layer.opacity}
+                    strokeWidth={layer.width}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    transform={`translate(${formatSvgNumber(layer.dx)} ${formatSvgNumber(layer.dy)})`}
+                  />
+                )),
+              )}
             </g>
           ))}
           {snapshotMode === "final" && speakerSections.length > 1
