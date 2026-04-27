@@ -45,6 +45,7 @@ export async function loadPlaybackDocument(transcriptId?: string): Promise<Playb
   const resolvedTranscriptId = transcriptId || (await fetchLatestCompletedTranscriptId());
   const transcript = await fetchJson<{
     id: string;
+    language_code: string | null;
     conversation_title: string | null;
     speaker_labels: Record<string, string>;
     review_status: PlaybackDocument["reviewStatus"];
@@ -56,6 +57,7 @@ export async function loadPlaybackDocument(transcriptId?: string): Promise<Playb
   );
   return {
     transcriptId: resolvedTranscriptId,
+    languageCode: transcript.language_code,
     conversationTitle: transcript.conversation_title,
     speakerLabels: transcript.speaker_labels ?? {},
     reviewStatus: transcript.review_status,
@@ -216,6 +218,7 @@ export async function saveTranscriptReview(
   }
   const transcript = (await response.json()) as {
     id: string;
+    language_code: string | null;
     conversation_title: string | null;
     speaker_labels: Record<string, string>;
     review_status: PlaybackDocument["reviewStatus"];
@@ -225,6 +228,7 @@ export async function saveTranscriptReview(
   };
   return {
     transcriptId: transcript.id,
+    languageCode: transcript.language_code,
     conversationTitle: transcript.conversation_title,
     speakerLabels: transcript.speaker_labels ?? {},
     reviewStatus: transcript.review_status,

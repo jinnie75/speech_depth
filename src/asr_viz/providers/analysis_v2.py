@@ -215,8 +215,8 @@ _SUBSTANCE_I_AM_INVALID_DESCRIPTOR_WORDS = {
     "with",
 }
 _NRC_EMOLEX_ENV_VAR = "NRC_EMOLEX_PATH"
-_NRC_EMOLEX_FILENAME = "NRC-Emotion-Lexicon-Wordlevel-v0.92.txt"
 _NRC_EMOLEX_KO_ENV_VAR = "NRC_EMOLEX_KO_PATH"
+_ENGLISH_EMOTION_WORDS_FILENAME = "english_emotion_words_filtered.txt"
 _KOREAN_EMOTION_WORDS_FILENAME = "korean_emotion_words_filtered.txt"
 _SUBSTANCE_LIFE_TREATMENT_PHRASES = (
     "my life",
@@ -479,50 +479,57 @@ def _matching_clause(original_text: str, match: str) -> str:
     return original_text.strip()
 
 
+def _english_emotion_word_candidate_paths() -> list[Path]:
+    env_path = os.getenv(_NRC_EMOLEX_ENV_VAR)
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+
+    provider_dir = Path(__file__).resolve().parent
+    candidates.append(provider_dir / _ENGLISH_EMOTION_WORDS_FILENAME)
+    return candidates
+
+
+def _parse_english_emolex_row(parts: list[str]) -> set[str]:
+    if len(parts) == 1:
+        term = parts[0].strip().lower()
+        return {term} if term else set()
+
+    if len(parts) != 3:
+        return set()
+
+    term, label, association = parts
+    normalized_term = term.strip().lower()
+    normalized_label = label.strip().lower()
+    normalized_association = association.strip()
+    if (
+        not normalized_term
+        or normalized_label not in _SUBSTANCE_EMOTION_LABELS
+        or normalized_association != "1"
+    ):
+        return set()
+    return {normalized_term}
+
+
 @lru_cache(maxsize=1)
-def _load_nrc_emolex() -> dict[str, set[str]]:
-    for path in _nrc_emolex_candidate_paths():
+def _load_english_emotion_words() -> set[str]:
+    for path in _english_emotion_word_candidate_paths():
         if not path.exists():
             continue
 
-        lexicon: dict[str, set[str]] = {}
+        lexicon: set[str] = set()
         for raw_line in path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
 
             parts = line.split("\t")
-            if len(parts) != 3:
-                continue
-
-            term, label, association = parts
-            normalized_term = term.strip().lower()
-            normalized_label = label.strip().lower()
-            normalized_association = association.strip()
-            if (
-                not normalized_term
-                or normalized_label not in _SUBSTANCE_EMOTION_LABELS
-                or normalized_association != "1"
-            ):
-                continue
-
-            lexicon.setdefault(normalized_term, set()).add(normalized_label)
+            lexicon.update(_parse_english_emolex_row(parts))
 
         if lexicon:
             return lexicon
 
-    return {}
-
-
-def _nrc_emolex_candidate_paths() -> list[Path]:
-    env_path = os.getenv(_NRC_EMOLEX_ENV_VAR)
-    candidates: list[Path] = []
-    if env_path:
-        candidates.append(Path(env_path))
-
-    repo_root = Path(__file__).resolve().parents[3]
-    candidates.append(repo_root / ".lexicons" / "nrc_emolex" / _NRC_EMOLEX_FILENAME)
-    return candidates
+    return set()
 
 
 def _nrc_emolex_korean_candidate_paths() -> list[Path]:
@@ -580,7 +587,7 @@ def _parse_korean_emolex_row(parts: list[str]) -> set[str]:
 
 
 def _emotion_word_matches(normalized_text: str) -> list[str]:
-    lexicon = _load_nrc_emolex()
+    lexicon = _load_english_emotion_words()
     matches: list[str] = []
     for token in _tokenize(normalized_text):
         if token in lexicon:
@@ -619,7 +626,7 @@ def _emotion_word_matches_korean(normalized_text: str) -> list[str]:
 
 
 def _emotion_modifier_matches(normalized_text: str) -> list[str]:
-    lexicon = _load_nrc_emolex()
+    lexicon = _load_english_emotion_words()
     matches: list[str] = []
     for token in _tokenize(normalized_text):
         if token in lexicon and _is_emotion_modifier_word(token):

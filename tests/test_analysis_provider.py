@@ -9,6 +9,7 @@ from asr_viz.providers.analysis_v2 import (
     HeuristicAnalysisProvider,
     _emotion_word_matches,
     _emotion_word_matches_korean,
+    _load_english_emotion_words,
     _load_korean_emotion_words,
 )
 
@@ -187,7 +188,68 @@ class HeuristicAnalysisProviderTests(unittest.TestCase):
         self.assertNotIn("i_am", substance["categories"])
         self.assertNotIn("i am tall", substance["matches"])
 
-    def test_emotion_word_matches_are_backed_by_vendored_lexicon_and_nltk_wordnet(self) -> None:
+    def test_english_emotion_words_support_nrc_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lexicon_path = Path(tmp_dir) / "NRC-Emotion-Lexicon-Wordlevel-v0.92.txt"
+            lexicon_path.write_text(
+                "\n".join(
+                    [
+                        "overwhelmed\tsadness\t1",
+                        "angry\tanger\t1",
+                        "desk\ttrust\t0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            previous_path = os.environ.get("NRC_EMOLEX_PATH")
+            os.environ["NRC_EMOLEX_PATH"] = str(lexicon_path)
+            _load_english_emotion_words.cache_clear()
+            try:
+                matches = _emotion_word_matches("overwhelmed and angry near the desk")
+            finally:
+                if previous_path is None:
+                    os.environ.pop("NRC_EMOLEX_PATH", None)
+                else:
+                    os.environ["NRC_EMOLEX_PATH"] = previous_path
+                _load_english_emotion_words.cache_clear()
+
+        self.assertIn("overwhelmed", matches)
+        self.assertIn("angry", matches)
+        self.assertNotIn("desk", matches)
+
+    def test_english_emotion_words_support_plain_text_filtered_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lexicon_path = Path(tmp_dir) / "english_emotion_words_filtered.txt"
+            lexicon_path.write_text(
+                "\n".join(
+                    [
+                        "overwhelmed",
+                        "angry",
+                        "",
+                        "anxious",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            previous_path = os.environ.get("NRC_EMOLEX_PATH")
+            os.environ["NRC_EMOLEX_PATH"] = str(lexicon_path)
+            _load_english_emotion_words.cache_clear()
+            try:
+                matches = _emotion_word_matches("Overwhelmed and anxious, but not at the desk.".lower())
+            finally:
+                if previous_path is None:
+                    os.environ.pop("NRC_EMOLEX_PATH", None)
+                else:
+                    os.environ["NRC_EMOLEX_PATH"] = previous_path
+                _load_english_emotion_words.cache_clear()
+
+        self.assertIn("overwhelmed", matches)
+        self.assertIn("anxious", matches)
+        self.assertNotIn("desk", matches)
+
+    def test_emotion_word_matches_are_backed_by_filtered_english_lexicon_and_nltk_wordnet(self) -> None:
         provider = HeuristicAnalysisProvider()
         sentence = "Overwhelmed and angry."
 

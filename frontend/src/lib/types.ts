@@ -214,6 +214,7 @@ export interface LiveSessionResponse {
 
 export interface PlaybackDocument {
   transcriptId: string;
+  languageCode: string | null;
   conversationTitle: string | null;
   speakerLabels: Record<string, string>;
   reviewStatus: ReviewStatus;

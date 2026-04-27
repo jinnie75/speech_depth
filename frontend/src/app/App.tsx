@@ -81,6 +81,70 @@ const LIVE_SUBSTANCE_PHRASES = [
   "i am afraid",
   "help",
 ];
+const ANALYZER_HEDGING_ROWS = [
+  {
+    category: "Hedge phrases",
+    english: "maybe, I might be wrong",
+    korean: "~것 같, 제가 틀릴 수도 있지만, 다름이 아니라, 괜찮으시면, 죄송하지만, 바쁘시겠지만",
+  },
+  {
+    category: "Apology",
+    english: "sorry",
+    korean: "죄송합니다",
+  },
+  {
+    category: "Reassurance",
+    english: "it's fine, it's nothing",
+    korean: "별건 아니고, 괜찮아",
+  },
+  {
+    category: "Transitions",
+    english: "actually, honestly, anyway",
+    korean: "솔직히, 사실은, 어쩌면, 혹시",
+  },
+  {
+    category: "Tag questions / fillers",
+    english: "you know, right?",
+    korean: "그냥, 되게",
+  },
+  {
+    category: "Pauses",
+    english: "\"...\"",
+    korean: "종결어미가 아닌 형태로 끝남 (는데... 그게...)",
+  },
+] as const;
+const ANALYZER_EMOTION_ROWS = [
+  {
+    category: "Words associated with emotions",
+    english: "(Hand curated, adapting from the NRC EmoLex)",
+    korean: "-",
+  },
+  {
+    category: "I feel",
+    english: "I feel",
+    korean: "-",
+  },
+  {
+    category: "I want",
+    english: "I want",
+    korean: "원하다, 바라다, 고 싶, 기 싫",
+  },
+  {
+    category: "I don't know",
+    english: "I don't know",
+    korean: "-",
+  },
+  {
+    category: "I am + emotional descriptor",
+    english: "I'm worried, I'm frustrated",
+    korean: "-",
+  },
+  {
+    category: "People treat me / comments about life",
+    english: "people treat me, my life",
+    korean: "평생, 인생, 생애, 삶, 태어나, 평가, 평판, 인상, ...",
+  },
+] as const;
 
 type SpeakerCount = 1 | 2 | 3;
 type AppMode = "select" | "create" | "about" | "live" | "review" | "playback";
@@ -328,7 +392,7 @@ function ArchivePreviewCard({ isActive, option, preview, disabled = false, onSel
             </div>
           ) : (
             <div className="archive-card__placeholder">
-              <p>Preview ready.</p>
+              <span className="archive-card__spinner" aria-label="Loading preview" />
             </div>
           )
         ) : preview === null ? (
@@ -337,7 +401,7 @@ function ArchivePreviewCard({ isActive, option, preview, disabled = false, onSel
           </div>
         ) : (
           <div className="archive-card__placeholder">
-            <p>Preparing final image...</p>
+            <span className="archive-card__spinner" aria-label="Loading preview" />
           </div>
         )}
       </div>
@@ -1202,6 +1266,15 @@ function describeProcessingProgress(streamSession: StreamSessionResponse | null,
   return null;
 }
 
+function isVisualizationSupportedLanguage(languageCode: string | null | undefined): boolean {
+  if (!languageCode) {
+    return true;
+  }
+
+  const normalized = languageCode.trim().toLowerCase();
+  return normalized === "en" || normalized.startsWith("en-") || normalized === "ko" || normalized.startsWith("ko-");
+}
+
 function detectSpeakerIds(document: PlaybackDocument | null): string[] {
   if (!document) {
     return [];
@@ -1427,6 +1500,8 @@ export function App() {
   const [isMediaMuted, setIsMediaMuted] = useState(false);
   const [isPlaybackComplete, setIsPlaybackComplete] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isUnsupportedLanguageNoticeOpen, setIsUnsupportedLanguageNoticeOpen] = useState(false);
+  const [isAnalyzerLogicOpen, setIsAnalyzerLogicOpen] = useState(false);
   const mediaObjectUrlRef = useRef<string | null>(null);
   const pollingSessionIdRef = useRef<string | null>(null);
   const mediaElementRef = useRef<HTMLVideoElement | null>(null);
@@ -1586,6 +1661,15 @@ export function App() {
     setReviewDraft(buildReviewDraft(document));
     setSaveState("idle");
   }, [document]);
+
+  useEffect(() => {
+    if (mode !== "review" || !document) {
+      setIsUnsupportedLanguageNoticeOpen(false);
+      return;
+    }
+
+    setIsUnsupportedLanguageNoticeOpen(!isVisualizationSupportedLanguage(document.languageCode));
+  }, [document, mode]);
 
   useEffect(() => {
     if (mode !== "select") {
@@ -1792,6 +1876,7 @@ export function App() {
   const finalActiveUtterancePlaybackState = finalActiveUtterance
     ? getUtterancePlaybackState(finalActiveUtterance, finalSnapshotTimeMs)
     : null;
+  const hasUnsupportedVisualizationLanguage = !!document && !isVisualizationSupportedLanguage(document.languageCode);
   const landscapeUtterances = utterances.map((utterance, index) => {
     const playbackState = getUtterancePlaybackState(utterance, landscapeTimeMs);
 
@@ -2845,16 +2930,55 @@ export function App() {
             </div>
           </header>
 
-          <section className="about-shell__content">
-            <p>
-              Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et
-              dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip
-              ex ea commodo consequat.
+          <section className="about-shell__content surface-card">
+            <p className="about-shell__lede">
+              <strong>Of Terrains We Speak</strong> is an interactive conversation visualizer that reveals patterns of
+              hedging, emotion, and vulnerability, and how differently these can look across cultures, contexts, and
+              relationships.
             </p>
             <p>
-              Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
-              Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est
-              laborum.
+              Each speaker is represented by different colored terrains that grows as the conversation progresses, its area proportional to how much they’ve spoken.
+            </p>
+            <p>
+              To create your own, upload a recording of a conversation or monologue.
+              The system transcribes what it hears, identifies speakers, and detects expressions of hedging and uncertainty, each one adding elevation to the topographic map.
+              Expressions of emotions, expectations, and reflections on life is identified and drawn into part of the map.
+              All uploaded audio and generated images are saved only to your browser's local storage and never leave your computer.
+            </p>
+            <figure className="about-shell__demo">
+              <video
+                className="about-shell__demo-video"
+                autoPlay
+                muted
+                loop
+                playsInline
+                controls
+                preload="metadata"
+              >
+                <source src="https://pub-fac97a5459d549dba2192532c4a46276.r2.dev/recording_flow.webm" type="video/webm" />
+                Your browser does not support the video tag.
+              </video>
+            </figure>
+            <p>
+              I am bilingual in Korean and English but have spent most of my life in Korea.
+              Navigating male-dominant workplaces and a new life in America has been confusing,
+              expected to express myself in a way contradictory from how I’ve been raised to behave — be modest, don't ask questions, it's just the way it is.
+              I’m trying to change, but it’s hard to steer far from where you’re anchored.
+              This project is an attempt to bring this difference to attention: a reminder that we have different patterns of expression, and to have patience towards one another.
+            </p>
+            <p>
+              The system takes a dictionary-based approach to analysis.
+              {" "}
+              The full list of hedging cues and emotional expressions it detects can be found{" "}
+              <button
+                type="button"
+                className="about-shell__inline-button"
+                onClick={() => setIsAnalyzerLogicOpen(true)}
+              >
+                here
+              </button>
+              . It currently only supports English and Korean. For collaboration or language extensions, contact me
+              at <code>gnyshm (at) gmail (dot) com</code>.
             </p>
           </section>
         </section>
@@ -3167,6 +3291,120 @@ export function App() {
         </div>
       ) : null}
 
+      {mode === "review" && document && isUnsupportedLanguageNoticeOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-card"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="unsupported-language-title"
+            aria-describedby="unsupported-language-copy"
+          >
+            <button
+              type="button"
+              className="modal-card__close"
+              aria-label="Close language support notice"
+              onClick={() => setIsUnsupportedLanguageNoticeOpen(false)}
+            >
+              ×
+            </button>
+            <p className="eyebrow">Language Support</p>
+            <h2 id="unsupported-language-title">Visualization is limited for this transcript</h2>
+            <p id="unsupported-language-copy" className="surface-note">
+              The full visualization currently only supports English and Korean. For collaboration on language
+              extensions, contact me at gnyshm (at) gmail (dot) com.
+            </p>
+            <div className="modal-card__actions">
+              <button
+                type="button"
+                className="submit-upload"
+                onClick={() => setIsUnsupportedLanguageNoticeOpen(false)}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isAnalyzerLogicOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setIsAnalyzerLogicOpen(false)}>
+          <div
+            className="modal-card modal-card--wide analyzer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="analyzer-logic-title"
+            aria-describedby="analyzer-logic-copy"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="modal-card__close"
+              aria-label="Close analyzer explanation"
+              onClick={() => setIsAnalyzerLogicOpen(false)}
+            >
+              ×
+            </button>
+            <p className="eyebrow">Analyzer Logic</p>
+            <h2 id="analyzer-logic-title">How the analyzer makes matches</h2>
+            <p id="analyzer-logic-copy" className="surface-note">
+              The system looks for rule-based matches on patterns listed below. Choosing this rather primitive
+              approach over an LLM-driven one was a deliberate choice for transparency and reliability after
+              experimenting and finding that such approaches produced too many false positives for this kind of
+              nuanced detection.
+            </p>
+
+            <section className="analyzer-modal__section">
+              <h3>Hedging and Expressions of Uncertainty</h3>
+              <div className="analyzer-modal__table-wrap">
+                <table className="analyzer-modal__table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Category</th>
+                      <th scope="col">English examples</th>
+                      <th scope="col">Korean examples</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ANALYZER_HEDGING_ROWS.map((row) => (
+                      <tr key={row.category}>
+                        <th scope="row">{row.category}</th>
+                        <td>{row.english}</td>
+                        <td>{row.korean}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="analyzer-modal__section">
+              <h3>Expressions of Human Emotions</h3>
+              <div className="analyzer-modal__table-wrap">
+                <table className="analyzer-modal__table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Category</th>
+                      <th scope="col">English</th>
+                      <th scope="col">Korean</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ANALYZER_EMOTION_ROWS.map((row) => (
+                      <tr key={row.category}>
+                        <th scope="row">{row.category}</th>
+                        <td>{row.english}</td>
+                        <td>{row.korean}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </div>
+      ) : null}
+
       {mode === "playback" && document ? (
         <>
           <section className="playback-header">
@@ -3206,16 +3444,24 @@ export function App() {
                 <p>Review speaker assignments in the transcript editor if you want a richer conversation map.</p>
               </div>
             ) : (
-              <ConversationLandscape
-                ref={landscapeRef}
-                speakers={landscapeSpeakers}
-                utterances={landscapeUtterances}
-                activeSpeakerId={activeUtterance?.speakerId ?? null}
-                activeTranscript={activeTranscript}
-                marginNotes={marginNotes}
-                currentTimeMs={landscapeTimeMs}
-                snapshotMode={isPlaybackComplete ? "final" : "live"}
-              />
+              <>
+                <ConversationLandscape
+                  ref={landscapeRef}
+                  speakers={landscapeSpeakers}
+                  utterances={landscapeUtterances}
+                  activeSpeakerId={activeUtterance?.speakerId ?? null}
+                  activeTranscript={activeTranscript}
+                  marginNotes={marginNotes}
+                  currentTimeMs={landscapeTimeMs}
+                  snapshotMode={isPlaybackComplete ? "final" : "live"}
+                />
+                {hasUnsupportedVisualizationLanguage ? (
+                  <p className="terrain-grid__note">
+                    This visualization currently only shows the plain transcript. For a fuller visualization experience
+                    and language extension, contact me at gnyshm (at) gmail (dot) com.
+                  </p>
+                ) : null}
+              </>
             )}
             {transcriptLoadStatus !== "empty" && landscapeSpeakers.length > 0 ? (
               <div className="conversation-landscape__export-proxy" aria-hidden="true">

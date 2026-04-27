@@ -30,7 +30,7 @@ flowchart LR
         whisper["Transcription provider<br/>Faster Whisper or mock text reader<br/>src/asr_viz/providers/transcription.py"]
         pyannote["Optional diarization provider<br/>Pyannote or no-op<br/>src/asr_viz/providers/diarization.py"]
         analysis["Heuristic analysis provider<br/>hedging + substance extraction<br/>src/asr_viz/providers/analysis_v2.py"]
-        lexicons["Local NLP resources<br/>.lexicons/nrc_emolex<br/>.nltk_data"]
+        lexicons["Local NLP resources<br/>src/asr_viz/providers/*_emotion_words_filtered.txt<br/>.nltk_data"]
     end
 
     subgraph storage["Persistence And Files"]
