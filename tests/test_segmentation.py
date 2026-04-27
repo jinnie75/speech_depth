@@ -133,6 +133,55 @@ class SegmentationTests(unittest.TestCase):
         self.assertEqual(sentences[0].text, "I spoke to Dr. Smith yesterday.")
         self.assertEqual(sentences[1].text, "He agreed right away.")
 
+    def test_segment_transcript_splits_on_large_pause_without_punctuation(self) -> None:
+        segments = [
+            ASRSegment(
+                segment_index=0,
+                start_ms=0,
+                end_ms=4100,
+                text="we should revisit the budget tomorrow maybe ask sarah first",
+                words=[
+                    ASRWord(word="we", start_ms=0, end_ms=150, probability=0.95),
+                    ASRWord(word="should", start_ms=150, end_ms=450, probability=0.95),
+                    ASRWord(word="revisit", start_ms=450, end_ms=850, probability=0.94),
+                    ASRWord(word="the", start_ms=850, end_ms=980, probability=0.94),
+                    ASRWord(word="budget", start_ms=980, end_ms=1350, probability=0.94),
+                    ASRWord(word="tomorrow", start_ms=2100, end_ms=2550, probability=0.93),
+                    ASRWord(word="maybe", start_ms=2550, end_ms=2850, probability=0.93),
+                    ASRWord(word="ask", start_ms=2850, end_ms=3050, probability=0.93),
+                    ASRWord(word="sarah", start_ms=3050, end_ms=3450, probability=0.92),
+                    ASRWord(word="first", start_ms=3450, end_ms=4100, probability=0.92),
+                ],
+            )
+        ]
+
+        sentences = segment_transcript(segments)
+
+        self.assertEqual(len(sentences), 2)
+        self.assertEqual(sentences[0].text, "we should revisit the budget")
+        self.assertEqual(sentences[0].end_ms, 1350)
+        self.assertEqual(sentences[1].text, "tomorrow maybe ask sarah first")
+        self.assertEqual(sentences[1].start_ms, 2100)
+
+    def test_segment_transcript_forces_split_when_text_runs_too_long(self) -> None:
+        segments = [
+            ASRSegment(
+                segment_index=0,
+                start_ms=0,
+                end_ms=5400,
+                text="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon",
+            )
+        ]
+
+        sentences = segment_transcript(segments)
+
+        self.assertEqual(len(sentences), 2)
+        self.assertEqual(
+            sentences[0].text,
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho",
+        )
+        self.assertEqual(sentences[1].text, "sigma tau upsilon")
+
     def test_segment_transcript_splits_korean_sentences_on_terminal_punctuation(self) -> None:
         segments = [
             ASRSegment(

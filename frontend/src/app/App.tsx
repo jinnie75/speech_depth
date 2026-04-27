@@ -50,6 +50,9 @@ const SPEAKER_COUNT_OPTIONS: SpeakerCount[] = [1, 2, 3];
 const LIVE_CAPTURE_TIMESLICE_MS = 1200;
 const ARCHIVE_PAGE_SIZE = 12;
 const ARCHIVE_PREVIEW_BATCH_SIZE = 4;
+const SUPPORTED_UPLOAD_EXTENSIONS = [".mov", ".mp4", ".wav"];
+const SUPPORTED_UPLOAD_MIME_TYPES = ["audio/wav", "audio/x-wav", "video/mp4", "video/quicktime"];
+const SUPPORTED_UPLOAD_ACCEPT = [...SUPPORTED_UPLOAD_EXTENSIONS, ...SUPPORTED_UPLOAD_MIME_TYPES].join(",");
 const LIVE_HEDGE_PHRASES = [
   "i think",
   "maybe",
@@ -215,6 +218,7 @@ interface ArchivePreviewCardProps {
   isActive: boolean;
   option: ProcessedTranscriptOption;
   preview: ArchivePreviewData | null | undefined;
+  disabled?: boolean;
   onSelect: (option: ProcessedTranscriptOption) => void;
 }
 
@@ -258,7 +262,7 @@ function MuteIcon() {
   );
 }
 
-function ArchivePreviewCard({ isActive, option, preview, onSelect }: ArchivePreviewCardProps) {
+function ArchivePreviewCard({ isActive, option, preview, disabled = false, onSelect }: ArchivePreviewCardProps) {
   const cardRef = useRef<HTMLButtonElement | null>(null);
   const [isVisible, setIsVisible] = useState(false);
 
@@ -298,6 +302,7 @@ function ArchivePreviewCard({ isActive, option, preview, onSelect }: ArchivePrev
       ref={cardRef}
       type="button"
       className={`archive-card${isActive ? " archive-card--active" : ""}`}
+      disabled={disabled}
       onClick={() => onSelect(option)}
     >
       <div className="archive-card__meta">
@@ -1028,6 +1033,16 @@ function fileToObjectUrl(file: File): string {
   return URL.createObjectURL(file);
 }
 
+function isSupportedUploadFile(file: File): boolean {
+  const normalizedMimeType = file.type.toLowerCase();
+  if (SUPPORTED_UPLOAD_MIME_TYPES.includes(normalizedMimeType)) {
+    return true;
+  }
+
+  const normalizedName = file.name.toLowerCase();
+  return SUPPORTED_UPLOAD_EXTENSIONS.some((extension) => normalizedName.endsWith(extension));
+}
+
 function getProcessedTranscriptLabel(job: JobSummary): string {
   const conversationTitle = job.conversation_title?.trim();
   if (conversationTitle) {
@@ -1743,6 +1758,7 @@ export function App() {
   const isReviewDirty = mode === "review" ? isReviewDraftDirty(document, reviewDraft) : false;
   const isTranscriptProcessing =
     streamSession !== null && ["open", "queued", "processing"].includes(streamSession.status);
+  const isUploadActionLocked = isUploading || isTranscriptProcessing;
   const hasMoreArchives = processedTranscriptOptions.length < archiveTotalCount;
   const marginNotes = shouldBuildConversationState ? buildMarginNotes(utterances) : [];
   const finalSnapshotTimeMs = getConversationFinalSnapshotTimeMs(utterances, marginNotes, mediaDurationMs);
@@ -1819,6 +1835,14 @@ export function App() {
 
   const appendLiveEntry = (entry: LiveTranscriptEntry) => {
     setLiveTranscriptEntries((currentEntries) => upsertLiveTranscriptEntry(currentEntries, entry));
+  };
+
+  const requestModeChange = (nextMode: AppMode) => {
+    if (isUploadActionLocked && nextMode !== mode) {
+      return;
+    }
+
+    setMode(nextMode);
   };
 
   const persistLiveEvent = async (
@@ -1960,6 +1984,9 @@ export function App() {
   };
 
   const handleStartLiveSession = async () => {
+    if (isUploadActionLocked) {
+      return;
+    }
     if (!liveCaptureSupported) {
       setError("Live recording is not available in this browser.");
       return;
@@ -2199,6 +2226,12 @@ export function App() {
       return;
     }
 
+    if (!isSupportedUploadFile(file)) {
+      setError("Please choose a .mov, .mp4, or .wav file.");
+      event.target.value = "";
+      return;
+    }
+
     setPendingFile(file);
     setSelectedProcessedTranscriptId("");
     setError(null);
@@ -2262,6 +2295,10 @@ export function App() {
   };
 
   const handleProcessedTranscriptSelect = async (option: ProcessedTranscriptOption) => {
+    if (isUploadActionLocked) {
+      return;
+    }
+
     try {
       await loadTranscriptIntoApp({
         transcriptId: option.transcriptId,
@@ -2275,7 +2312,7 @@ export function App() {
   };
 
   const handleLoadMoreArchives = async () => {
-    if (isArchivePageLoading || processedTranscriptOptions.length >= archiveTotalCount) {
+    if (isUploadActionLocked || isArchivePageLoading || processedTranscriptOptions.length >= archiveTotalCount) {
       return;
     }
 
@@ -2563,15 +2600,25 @@ export function App() {
         <section className="archive-shell">
           <header className="archive-header">
             <div className="archive-header__copy">
-              <button type="button" className="site-title-button" onClick={() => setMode("select")}>
+              <button
+                type="button"
+                className="site-title-button"
+                onClick={() => requestModeChange("select")}
+                disabled={isUploadActionLocked}
+              >
                 <h1>OF TERRAINS WE SPEAK</h1>
               </button>
             </div>
             <div className="archive-header__actions">
-              <button type="button" className="submit-upload" onClick={() => setMode("create")}>
+              <button type="button" className="submit-upload" onClick={() => requestModeChange("create")} disabled={isUploadActionLocked}>
                 Create New
               </button>
-              <button type="button" className="about-link-button archive-header__about" onClick={() => setMode("about")}>
+              <button
+                type="button"
+                className="about-link-button archive-header__about"
+                onClick={() => requestModeChange("about")}
+                disabled={isUploadActionLocked}
+              >
                 ABOUT
               </button>
             </div>
@@ -2588,7 +2635,7 @@ export function App() {
               <p className="surface-note">
                 Start a live session or upload a file to begin building the gallery.
               </p>
-              <button type="button" className="submit-upload" onClick={() => setMode("create")}>
+              <button type="button" className="submit-upload" onClick={() => requestModeChange("create")} disabled={isUploadActionLocked}>
                 Create the first conversation
               </button>
             </article>
@@ -2604,6 +2651,7 @@ export function App() {
                       isActive={selectedProcessedTranscriptId === option.transcriptId}
                       option={option}
                       preview={preview}
+                      disabled={isUploadActionLocked}
                       onSelect={(nextOption) => void handleProcessedTranscriptSelect(nextOption)}
                     />
                   );
@@ -2615,7 +2663,7 @@ export function App() {
                     type="button"
                     className="ghost-button"
                     onClick={() => void handleLoadMoreArchives()}
-                    disabled={isArchivePageLoading}
+                    disabled={isUploadActionLocked || isArchivePageLoading}
                   >
                     {isArchivePageLoading ? "Loading..." : "Load More"}
                   </button>
@@ -2631,15 +2679,30 @@ export function App() {
           <header className="create-shell__hero">
             <div className="create-shell__hero-row">
               <div className="create-shell__copy">
-                <button type="button" className="site-title-button" onClick={() => setMode("select")}>
+                <button
+                  type="button"
+                  className="site-title-button"
+                  onClick={() => requestModeChange("select")}
+                  disabled={isUploadActionLocked}
+                >
                   <h1>OF TERRAINS WE SPEAK</h1>
                 </button>
               </div>
               <div className="create-shell__actions">
-                <button type="button" className="submit-upload" onClick={() => setMode("select")}>
+                <button
+                  type="button"
+                  className="submit-upload"
+                  onClick={() => requestModeChange("select")}
+                  disabled={isUploadActionLocked}
+                >
                   Back to Archives
                 </button>
-                <button type="button" className="about-link-button create-shell__about" onClick={() => setMode("about")}>
+                <button
+                  type="button"
+                  className="about-link-button create-shell__about"
+                  onClick={() => requestModeChange("about")}
+                  disabled={isUploadActionLocked}
+                >
                   ABOUT
                 </button>
               </div>
@@ -2664,22 +2727,25 @@ export function App() {
                   <p className="upload-processing__copy">
                     {describeProcessingProgress(streamSession, uploadProgress) ?? "Your transcript is processing."}
                   </p>
+                  <p className="surface-note upload-processing__note">
+                    Other actions are paused until this upload finishes.
+                  </p>
                 </div>
               ) : !pendingFile ? (
                 <label className="upload-dropzone">
-                  <input type="file" accept=".mov,.mp4,video/mp4,video/quicktime" onChange={handleFileChange} />
-                  <span className="upload-dropzone__step">Step 1 upload audio file</span>
+                  <input type="file" accept={SUPPORTED_UPLOAD_ACCEPT} onChange={handleFileChange} />
+                  <span className="upload-dropzone__step">Step 1 upload media file</span>
                   <strong>click to add file</strong>
-                  <span className="upload-dropzone__hint">Choose a .mov or .mp4 file to visualize</span>
+                  <span className="upload-dropzone__hint">Choose a .mov, .mp4, or .wav file to visualize</span>
                 </label>
               ) : (
                 <div className="upload-workflow">
                   <div className="upload-workflow__file">
-                    <p className="upload-workflow__step">Step 1 upload audio file</p>
+                    <p className="upload-workflow__step">Step 1 upload media file</p>
                     <h3>{pendingFile.name}</h3>
                     <label className="ghost-button upload-workflow__replace">
                       choose another file
-                      <input type="file" accept=".mov,.mp4,video/mp4,video/quicktime" onChange={handleFileChange} />
+                      <input type="file" accept={SUPPORTED_UPLOAD_ACCEPT} onChange={handleFileChange} />
                     </label>
                   </div>
 
@@ -2730,7 +2796,7 @@ export function App() {
                     type="button"
                     className="submit-upload"
                     onClick={() => void handleStartLiveSession()}
-                    disabled={!liveCaptureSupported || liveCaptureState !== "idle"}
+                    disabled={isUploadActionLocked || !liveCaptureSupported || liveCaptureState !== "idle"}
                   >
                     Start live capture
                   </button>
@@ -2751,14 +2817,29 @@ export function App() {
       {mode === "about" ? (
         <section className="about-shell">
           <header className="about-shell__header">
-            <button type="button" className="site-title-button" onClick={() => setMode("select")}>
+            <button
+              type="button"
+              className="site-title-button"
+              onClick={() => requestModeChange("select")}
+              disabled={isUploadActionLocked}
+            >
               <h1>OF TERRAINS WE SPEAK</h1>
             </button>
             <div className="about-shell__actions">
-              <button type="button" className="submit-upload" onClick={() => setMode("select")}>
+              <button
+                type="button"
+                className="submit-upload"
+                onClick={() => requestModeChange("select")}
+                disabled={isUploadActionLocked}
+              >
                 Back to Main
               </button>
-              <button type="button" className="submit-upload" onClick={() => setMode("create")}>
+              <button
+                type="button"
+                className="submit-upload"
+                onClick={() => requestModeChange("create")}
+                disabled={isUploadActionLocked}
+              >
                 Create New
               </button>
             </div>
@@ -2801,8 +2882,8 @@ export function App() {
               <button
                 type="button"
                 className="ghost-button"
-                onClick={() => setMode("create")}
-                disabled={liveCaptureState !== "idle"}
+                onClick={() => requestModeChange("create")}
+                disabled={isUploadActionLocked || liveCaptureState !== "idle"}
               >
                 Back to Create
               </button>
@@ -2928,7 +3009,12 @@ export function App() {
                   />
                 </div>
                 <div className="review-toolbar__actions">
-                  <button type="button" className="ghost-button" onClick={() => setMode("select")}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => requestModeChange("select")}
+                    disabled={isUploadActionLocked}
+                  >
                     Back to Archive
                   </button>
                   <button
@@ -3088,10 +3174,20 @@ export function App() {
               <div className="playback-header__title-row">
                 <h2>{document.conversationTitle || mediaName}</h2>
                 <div className="playback-header__actions">
-                  <button type="button" className="ghost-button" onClick={() => setMode("select")}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => requestModeChange("select")}
+                    disabled={isUploadActionLocked}
+                  >
                     Back to Archive
                   </button>
-                  <button type="button" className="ghost-button" onClick={() => setMode("review")}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => requestModeChange("review")}
+                    disabled={isUploadActionLocked}
+                  >
                     Edit Transcript
                   </button>
                   <button type="button" className="submit-upload" onClick={() => void handleDownloadSnapshot()}>

@@ -42,7 +42,7 @@
   --highlight-soft: rgba(10, 143, 135, 0.12);
   --ui-font: "Noto Sans KR", sans-serif;
   --transcript-font: "Transcript Mixed", "Noto Serif KR", serif;
-  --landscape-transcript-height: clamp(5.5rem, 10vw, 7rem);
+  --landscape-transcript-height: clamp(7rem, 12vw, 9rem);
   font-family: var(--ui-font);
   color: var(--ink);
 }
@@ -221,6 +221,13 @@ button {
   cursor: pointer;
 }
 
+.about-link-button:disabled,
+.site-title-button:disabled,
+.archive-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .site-title-button {
   padding: 0;
   border: 0;
@@ -331,11 +338,25 @@ button {
   display: grid;
   gap: 0.85rem;
   padding: 1.1rem;
+  border: 1px solid var(--line);
   border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.88);
   min-width: 0;
   overflow: hidden;
   text-align: left;
   cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.archive-card:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 18px 34px rgba(23, 24, 28, 0.07);
+  transform: translateY(-1px);
 }
 
 .archive-card--active {
@@ -547,6 +568,10 @@ button {
   font-size: clamp(2rem, 4vw, 2.5rem);
   font-family: var(--ui-font);
   letter-spacing: -0.03em;
+}
+
+.upload-processing__note {
+  margin: 0;
 }
 
 .upload-processing__bar {
@@ -1378,9 +1403,9 @@ button {
   top: 0.55rem;
   left: 50%;
   z-index: 3;
-  width: min(calc(100% - 2.2rem), 72ch);
+  width: min(calc(100% - 1.8rem), 74ch);
   min-height: var(--landscape-transcript-height);
-  max-height: var(--landscape-transcript-height);
+  max-height: min(calc(100% - 1.1rem), var(--landscape-transcript-height));
   padding: 0.95rem 1.1rem 0.55rem;
   overflow: hidden;
   transform: translateX(-50%);
@@ -1392,6 +1417,18 @@ button {
   max-height: none;
   padding-bottom: 0.95rem;
   overflow: visible;
+}
+
+.conversation-landscape__canvas .conversation-landscape__transcript--compact {
+  width: min(calc(100% - 1.5rem), 78ch);
+  max-height: min(calc(100% - 1.1rem), calc(var(--landscape-transcript-height) + 1.8rem));
+}
+
+.conversation-landscape__canvas .conversation-landscape__transcript--dense {
+  width: min(calc(100% - 1.35rem), 82ch);
+  max-height: min(calc(100% - 1.1rem), calc(var(--landscape-transcript-height) + 3.6rem));
+  padding-top: 0.82rem;
+  padding-bottom: 0.65rem;
 }
 
 .conversation-landscape__transcript {
@@ -1426,6 +1463,27 @@ button {
   line-height: 1.45;
   text-wrap: pretty;
   overflow: hidden;
+}
+
+.conversation-landscape__transcript--compact .conversation-landscape__transcript-label {
+  font-size: 0.68rem;
+}
+
+.conversation-landscape__transcript--dense .conversation-landscape__transcript-label {
+  font-size: 0.64rem;
+  letter-spacing: 0.12em;
+}
+
+.conversation-landscape__transcript--compact .conversation-landscape__transcript-copy {
+  max-width: 74ch;
+  font-size: clamp(0.92rem, 1.22vw, 1.02rem);
+  line-height: 1.34;
+}
+
+.conversation-landscape__transcript--dense .conversation-landscape__transcript-copy {
+  max-width: 78ch;
+  font-size: clamp(0.82rem, 1.02vw, 0.92rem);
+  line-height: 1.24;
 }
 
 .conversation-landscape__transcript-word {

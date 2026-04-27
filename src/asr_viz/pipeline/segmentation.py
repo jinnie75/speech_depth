@@ -10,6 +10,11 @@ _TOKEN_RE = re.compile(r"\S+")
 _KOREAN_TERMINAL_PUNCTUATION = {".", "!", "?", "。", "！", "？"}
 _CAPITALIZED_STARTER_MIN_TOKENS = 4
 _CAPITALIZED_STARTER_GAP_MS = 250
+_PAUSE_BOUNDARY_MIN_TOKENS = 4
+_SOFT_PAUSE_GAP_MS = 425
+_HARD_PAUSE_GAP_MS = 675
+_MAX_TOKENS_WITHOUT_BOUNDARY = 18
+_MAX_CHARS_WITHOUT_BOUNDARY = 120
 _NON_TERMINAL_ABBREVIATIONS = {
     "dr.",
     "mr.",
@@ -161,7 +166,11 @@ def _segment_transcript_korean(segments: list[ASRSegment]) -> list[SentenceCandi
             continue
 
         combined_text, segment_entries = timeline
-        spans = _sentence_spans_by_terminal_punctuation(combined_text, _KOREAN_TERMINAL_PUNCTUATION)
+        spans = _sentence_spans_with_rules(
+            combined_text,
+            _tokenize(combined_text, segment_entries),
+            allow_capitalized_starters=False,
+        )
         for sentence_start, sentence_end in spans:
             sentences.append(
                 _build_sentence_candidate(
@@ -276,26 +285,65 @@ def _tokenize(text: str, segment_entries: list[_SegmentEntry]) -> list[_TokenEnt
 
 
 def _sentence_spans(text: str, tokens: list[_TokenEntry]) -> list[tuple[int, int]]:
+    return _sentence_spans_with_rules(text, tokens, allow_capitalized_starters=True)
+
+
+def _sentence_spans_with_rules(
+    text: str,
+    tokens: list[_TokenEntry],
+    allow_capitalized_starters: bool,
+) -> list[tuple[int, int]]:
     if not tokens:
         return []
 
     spans: list[tuple[int, int]] = []
     start = 0
+    sentence_start_token_index = 0
+    preferred_soft_split_index: int | None = None
 
     for token_index, token in enumerate(tokens):
         next_token = tokens[token_index + 1] if token_index + 1 < len(tokens) else None
         if _should_end_sentence(token.text, next_token):
             spans.append((start, token.char_end))
             start = _skip_whitespace(text, token.char_end)
+            sentence_start_token_index = token_index + 1
+            preferred_soft_split_index = None
             continue
 
-        if token_index == 0:
+        if token_index == sentence_start_token_index:
             continue
 
-        if _should_split_before_capitalized_starter(tokens, token_index):
+        if _is_soft_pause_boundary(tokens, token_index, sentence_start_token_index):
+            preferred_soft_split_index = token_index
+
+        if allow_capitalized_starters and _should_split_before_capitalized_starter(tokens, token_index):
             previous_token = tokens[token_index - 1]
             spans.append((start, previous_token.char_end))
             start = token.char_start
+            sentence_start_token_index = token_index
+            preferred_soft_split_index = None
+            continue
+
+        if _should_split_before_hard_pause(tokens, token_index, sentence_start_token_index):
+            previous_token = tokens[token_index - 1]
+            spans.append((start, previous_token.char_end))
+            start = token.char_start
+            sentence_start_token_index = token_index
+            preferred_soft_split_index = None
+            continue
+
+        if _should_force_sentence_split(tokens, sentence_start_token_index, token_index):
+            split_token_index = _select_forced_split_token_index(
+                tokens,
+                sentence_start_token_index,
+                token_index,
+                preferred_soft_split_index,
+            )
+            previous_token = tokens[split_token_index - 1]
+            spans.append((start, previous_token.char_end))
+            start = tokens[split_token_index].char_start
+            sentence_start_token_index = split_token_index
+            preferred_soft_split_index = None
 
     if start < len(text):
         spans.append((start, len(text)))
@@ -384,6 +432,75 @@ def _should_split_before_capitalized_starter(tokens: list[_TokenEntry], token_in
     return True
 
 
+def _gap_between_tokens_ms(tokens: list[_TokenEntry], token_index: int) -> int | None:
+    if token_index <= 0:
+        return None
+
+    previous_token = tokens[token_index - 1]
+    token = tokens[token_index]
+    if previous_token.word is None or token.word is None:
+        return None
+
+    return token.word.word.start_ms - previous_token.word.word.end_ms
+
+
+def _is_soft_pause_boundary(
+    tokens: list[_TokenEntry],
+    token_index: int,
+    sentence_start_token_index: int,
+) -> bool:
+    if token_index - sentence_start_token_index < _PAUSE_BOUNDARY_MIN_TOKENS:
+        return False
+
+    gap_ms = _gap_between_tokens_ms(tokens, token_index)
+    return gap_ms is not None and gap_ms >= _SOFT_PAUSE_GAP_MS
+
+
+def _should_split_before_hard_pause(
+    tokens: list[_TokenEntry],
+    token_index: int,
+    sentence_start_token_index: int,
+) -> bool:
+    if token_index - sentence_start_token_index < _PAUSE_BOUNDARY_MIN_TOKENS:
+        return False
+
+    gap_ms = _gap_between_tokens_ms(tokens, token_index)
+    return gap_ms is not None and gap_ms >= _HARD_PAUSE_GAP_MS
+
+
+def _should_force_sentence_split(
+    tokens: list[_TokenEntry],
+    sentence_start_token_index: int,
+    token_index: int,
+) -> bool:
+    token_count = token_index - sentence_start_token_index + 1
+    if token_count >= _MAX_TOKENS_WITHOUT_BOUNDARY:
+        return True
+
+    span_char_count = tokens[token_index].char_end - tokens[sentence_start_token_index].char_start
+    return span_char_count >= _MAX_CHARS_WITHOUT_BOUNDARY
+
+
+def _select_forced_split_token_index(
+    tokens: list[_TokenEntry],
+    sentence_start_token_index: int,
+    token_index: int,
+    preferred_soft_split_index: int | None,
+) -> int:
+    if (
+        preferred_soft_split_index is not None
+        and preferred_soft_split_index - sentence_start_token_index >= _PAUSE_BOUNDARY_MIN_TOKENS
+    ):
+        return preferred_soft_split_index
+
+    for candidate_index in range(token_index, sentence_start_token_index, -1):
+        candidate = tokens[candidate_index]
+        if _normalize_token(candidate.text) in _SENTENCE_STARTER_WORDS and candidate_index - sentence_start_token_index >= 3:
+            return candidate_index
+
+    return token_index
+
+
 def _starts_with_capital(text: str) -> bool:
     stripped = text.lstrip("\"'([{")
     return bool(stripped) and stripped[0].isupper()
@@ -403,7 +520,7 @@ def _should_end_sentence(token_text: str, next_token: _TokenEntry | None) -> boo
     stripped = _strip_terminal_wrapping(token_text)
     if not stripped or stripped.endswith("..."):
         return False
-    if not stripped.endswith(("!", "?", ".")):
+    if not stripped.endswith(tuple(_KOREAN_TERMINAL_PUNCTUATION)):
         return False
     if stripped.lower() in _NON_TERMINAL_ABBREVIATIONS and next_token is not None:
         return False

@@ -165,10 +165,12 @@ interface TextSegment {
   text: string;
 }
 
+type TranscriptDensity = "regular" | "compact" | "dense";
+
 const VIEWBOX_WIDTH = 1200;
 const VIEWBOX_HEIGHT = 620;
 const FALL_DISTANCE_Y = 248;
-const TRANSCRIPT_LABEL_FONT_FAMILY = '"Noto Serif SC", "Songti SC", "Source Han Serif SC", serif';
+const TRANSCRIPT_LABEL_FONT_FAMILY = '"Transcript Mixed", "Noto Serif KR", serif';
 const TRANSCRIPT_LABEL_FONT_SIZE = "0.72rem";
 const TRANSCRIPT_LABEL_FONT_WEIGHT = 500;
 const TRANSCRIPT_LABEL_LETTER_SPACING = "0.14em";
@@ -675,6 +677,40 @@ function buildTranscriptSegments(
       text: token.text,
     };
   });
+}
+
+function resolveTranscriptDensity(
+  transcriptElement: HTMLElement | null,
+  transcriptCopyElement: HTMLElement | null,
+  snapshotMode: "live" | "final",
+): TranscriptDensity {
+  if (
+    snapshotMode === "final" ||
+    typeof window === "undefined" ||
+    !transcriptElement ||
+    !transcriptCopyElement
+  ) {
+    return "regular";
+  }
+
+  const copyStyle = window.getComputedStyle(transcriptCopyElement);
+  const fontSizePx = parseCssLength(copyStyle.fontSize, 16) || 16;
+  const lineHeightPx = copyStyle.lineHeight === "normal"
+    ? fontSizePx * 1.2
+    : parseCssLength(copyStyle.lineHeight, fontSizePx) || fontSizePx * 1.2;
+  const estimatedLineCount = transcriptCopyElement.scrollHeight / Math.max(lineHeightPx, 1);
+  const overflowPx = Math.max(transcriptCopyElement.scrollHeight - transcriptCopyElement.clientHeight, 0);
+  const containerOverflowPx = Math.max(transcriptElement.scrollHeight - transcriptElement.clientHeight, 0);
+
+  if (estimatedLineCount > 7.2 || overflowPx > lineHeightPx * 1.1 || containerOverflowPx > lineHeightPx * 1.4) {
+    return "dense";
+  }
+
+  if (estimatedLineCount > 5.4 || overflowPx > 2 || containerOverflowPx > lineHeightPx * 0.45) {
+    return "compact";
+  }
+
+  return "regular";
 }
 
 function buildFallingWordRenderStates(
@@ -1557,10 +1593,13 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   staticPreview = false,
 }: ConversationLandscapeProps, ref) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const transcriptCopyRef = useRef<HTMLParagraphElement | null>(null);
   const wordRefs = useRef(new Map<string, HTMLSpanElement>());
   const sectionsCacheRef = useRef<LandscapeSectionsCache | null>(null);
   const [wordPositions, setWordPositions] = useState<Record<string, WordPosition>>({});
   const [marginNoteLaunchPositions, setMarginNoteLaunchPositions] = useState<Record<string, LaunchPosition>>({});
+  const [transcriptDensity, setTranscriptDensity] = useState<TranscriptDensity>("regular");
   const isStaticPreview = staticPreview && snapshotMode === "final";
   const sectionsCacheKey = getLandscapeSectionsCacheKey(speakers, utterances);
   if (!sectionsCacheRef.current || sectionsCacheRef.current.key !== sectionsCacheKey) {
@@ -1730,13 +1769,17 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
             const copyRect = transcriptCopyElement.getBoundingClientRect();
             const copyStyle = getCanvasTextStyle(window.getComputedStyle(transcriptCopyElement));
             copyStyle.color = transcriptColor;
+            const transcriptRenderHeight =
+              snapshotMode === "final"
+                ? Math.max(copyRect.height, transcriptCopyElement.scrollHeight)
+                : copyRect.height;
             drawWrappedTextSegments(
               context,
               transcriptSegments,
               copyRect.left - canvasRect.left,
               copyRect.top - canvasRect.top,
               copyRect.width,
-              Math.max(copyRect.height, transcriptCopyElement.scrollHeight),
+              transcriptRenderHeight,
               copyStyle,
               "center",
             );
@@ -1818,6 +1861,11 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
   );
 
   useLayoutEffect(() => {
+    const nextDensity = resolveTranscriptDensity(transcriptRef.current, transcriptCopyRef.current, snapshotMode);
+    setTranscriptDensity((currentDensity) => (currentDensity === nextDensity ? currentDensity : nextDensity));
+  }, [activeTranscript?.utteranceId, snapshotMode, transcriptTokenLayoutKey, canvasWidth, canvasHeight]);
+
+  useLayoutEffect(() => {
     if (isStaticPreview) {
       return;
     }
@@ -1890,19 +1938,24 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
       setWordPositions((currentPositions) =>
         areWordPositionsEqual(currentPositions, nextPositions) ? currentPositions : nextPositions,
       );
+      const nextDensity = resolveTranscriptDensity(transcriptRef.current, transcriptCopyRef.current, snapshotMode);
+      setTranscriptDensity((currentDensity) => (currentDensity === nextDensity ? currentDensity : nextDensity));
     });
 
     observer.observe(canvasRef.current);
     return () => observer.disconnect();
-  }, [isStaticPreview]);
+  }, [isStaticPreview, snapshotMode]);
 
   return (
     <section className="conversation-landscape" aria-label="Conversation landscape">
       <div ref={canvasRef} className="conversation-landscape__canvas">
         {activeTranscript ? (
           <div
+            ref={transcriptRef}
             className={`conversation-landscape__transcript${activeSection?.speaker.side === "right" ? " conversation-landscape__transcript--right" : ""
               }${snapshotMode === "final" ? " conversation-landscape__transcript--final" : ""
+              }${transcriptDensity === "compact" ? " conversation-landscape__transcript--compact" : ""
+              }${transcriptDensity === "dense" ? " conversation-landscape__transcript--dense" : ""
               }`}
             style={{ color: transcriptColor }}
             aria-live="polite"
@@ -1910,7 +1963,7 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
             {activeSection ? (
               <p className="conversation-landscape__transcript-label">{activeSection.speaker.label}</p>
             ) : null}
-            <p className="conversation-landscape__transcript-copy">
+            <p ref={transcriptCopyRef} className="conversation-landscape__transcript-copy">
               {activeTranscript.tokens.map((token) => {
                 if (token.kind === "text") {
                   return <span key={token.id}>{token.text}</span>;
