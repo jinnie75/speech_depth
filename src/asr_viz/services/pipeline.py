@@ -73,6 +73,7 @@ class ProcessingPipeline:
             }
 
             transcript = Transcript(
+                owner_user_id=job.owner_user_id,
                 media_asset_id=job.media_asset_id,
                 job_id=job.id,
                 language_code=transcript_result.language_code,

@@ -2868,7 +2868,7 @@ export function App() {
               )}
             </article>
 
-            <article className="surface-card onboarding-choice onboarding-choice--live">
+            {/* <article className="surface-card onboarding-choice onboarding-choice--live">
               <div className="onboarding-choice__header">
                 <h2>Start a live session</h2>
               </div>
@@ -2894,7 +2894,7 @@ export function App() {
                   </p>
                 </div>
               </div>
-            </article>
+            </article> */}
           </section>
         </section>
       ) : null}

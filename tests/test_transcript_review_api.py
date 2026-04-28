@@ -17,6 +17,8 @@ from asr_viz.services import bootstrap as bootstrap_module
 
 
 class TranscriptReviewApiTests(unittest.TestCase):
+    owner_user_id = "test-review-user"
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "test_review.db"
@@ -49,6 +51,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
     def _seed_transcript(self) -> tuple[str, list[str]]:
         with self.session_factory() as session:
             media_asset = MediaAsset(
+                owner_user_id=self.owner_user_id,
                 source_type="file",
                 source_uri=str(Path(self.temp_dir.name) / "conversation.mp4"),
                 mime_type="video/mp4",
@@ -59,6 +62,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
             session.flush()
 
             transcript = Transcript(
+                owner_user_id=self.owner_user_id,
                 media_asset_id=media_asset.id,
                 language_code="en",
                 full_text="Hello there. General Kenobi.",
@@ -93,6 +97,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
             session.flush()
 
             job = ProcessingJob(
+                owner_user_id=self.owner_user_id,
                 media_asset_id=media_asset.id,
                 transcript_id=transcript.id,
                 status=JobStatus.COMPLETED.value,
@@ -108,10 +113,13 @@ class TranscriptReviewApiTests(unittest.TestCase):
 
             return transcript.id, [first_sentence.id, second_sentence.id]
 
+    def _auth_headers(self) -> dict[str, str]:
+        return {"x-asr-viz-user-id": self.owner_user_id}
+
     def test_get_transcript_defaults_to_unreviewed_fields(self) -> None:
         client = TestClient(api_main.app)
 
-        response = client.get(f"/transcripts/{self.transcript_id}")
+        response = client.get(f"/transcripts/{self.transcript_id}", headers=self._auth_headers())
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -127,6 +135,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
 
         response = client.patch(
             f"/transcripts/{self.transcript_id}/review",
+            headers=self._auth_headers(),
             json={
                 "conversation_title": "Design Interview",
                 "speaker_labels": {
@@ -156,7 +165,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
         self.assertEqual(payload["sentence_units"][0]["manual_speaker_id"], "SPEAKER_01")
         self.assertTrue(payload["sentence_units"][0]["is_edited"])
 
-        jobs_response = client.get("/jobs")
+        jobs_response = client.get("/jobs", headers=self._auth_headers())
         self.assertEqual(jobs_response.status_code, 200)
         jobs_payload = jobs_response.json()
         self.assertEqual(jobs_payload["jobs"][0]["conversation_title"], "Design Interview")
@@ -168,7 +177,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
     def test_jobs_backfill_archive_preview_for_legacy_transcripts(self) -> None:
         client = TestClient(api_main.app)
 
-        jobs_response = client.get("/jobs")
+        jobs_response = client.get("/jobs", headers=self._auth_headers())
 
         self.assertEqual(jobs_response.status_code, 200)
         jobs_payload = jobs_response.json()
@@ -188,7 +197,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
         self._seed_transcript()
         client = TestClient(api_main.app)
 
-        response = client.get("/jobs?completed_only=true&limit=1&offset=1")
+        response = client.get("/jobs?completed_only=true&limit=1&offset=1", headers=self._auth_headers())
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -196,11 +205,26 @@ class TranscriptReviewApiTests(unittest.TestCase):
         self.assertEqual(len(payload["jobs"]), 1)
         self.assertIsNotNone(payload["jobs"][0]["transcript_id"])
 
+    def test_transcript_and_jobs_are_scoped_to_owner(self) -> None:
+        client = TestClient(api_main.app)
+
+        transcript_response = client.get(
+            f"/transcripts/{self.transcript_id}",
+            headers={"x-asr-viz-user-id": "another-user"},
+        )
+        self.assertEqual(transcript_response.status_code, 404)
+
+        jobs_response = client.get("/jobs", headers={"x-asr-viz-user-id": "another-user"})
+        self.assertEqual(jobs_response.status_code, 200)
+        self.assertEqual(jobs_response.json()["jobs"], [])
+        self.assertEqual(jobs_response.json()["total"], 0)
+
     def test_patch_review_rejects_invalid_speaker_and_sentence_ids(self) -> None:
         client = TestClient(api_main.app)
 
         invalid_speaker_response = client.patch(
             f"/transcripts/{self.transcript_id}/review",
+            headers=self._auth_headers(),
             json={
                 "conversation_title": "Review",
                 "speaker_labels": {"UNKNOWN": "Ghost"},
@@ -213,6 +237,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
 
         invalid_sentence_response = client.patch(
             f"/transcripts/{self.transcript_id}/review",
+            headers=self._auth_headers(),
             json={
                 "conversation_title": "Review",
                 "speaker_labels": {},
@@ -232,13 +257,13 @@ class TranscriptReviewApiTests(unittest.TestCase):
     def test_delete_transcript_removes_review_target_and_clears_job_link(self) -> None:
         client = TestClient(api_main.app)
 
-        delete_response = client.delete(f"/transcripts/{self.transcript_id}")
+        delete_response = client.delete(f"/transcripts/{self.transcript_id}", headers=self._auth_headers())
         self.assertEqual(delete_response.status_code, 204)
 
-        transcript_response = client.get(f"/transcripts/{self.transcript_id}")
+        transcript_response = client.get(f"/transcripts/{self.transcript_id}", headers=self._auth_headers())
         self.assertEqual(transcript_response.status_code, 404)
 
-        jobs_response = client.get("/jobs")
+        jobs_response = client.get("/jobs", headers=self._auth_headers())
         self.assertEqual(jobs_response.status_code, 200)
         jobs_payload = jobs_response.json()
         self.assertEqual(len(jobs_payload["jobs"]), 1)
@@ -248,15 +273,16 @@ class TranscriptReviewApiTests(unittest.TestCase):
         transcript_id, _ = self._seed_transcript()
         client = TestClient(api_main.app)
 
-        delete_response = client.post(f"/transcripts/{transcript_id}/delete")
+        delete_response = client.post(f"/transcripts/{transcript_id}/delete", headers=self._auth_headers())
         self.assertEqual(delete_response.status_code, 204)
 
-        transcript_response = client.get(f"/transcripts/{transcript_id}")
+        transcript_response = client.get(f"/transcripts/{transcript_id}", headers=self._auth_headers())
         self.assertEqual(transcript_response.status_code, 404)
 
     def test_patch_review_allows_naming_single_default_speaker(self) -> None:
         with self.session_factory() as session:
             media_asset = MediaAsset(
+                owner_user_id=self.owner_user_id,
                 source_type="file",
                 source_uri=str(Path(self.temp_dir.name) / "monologue.mp4"),
                 mime_type="video/mp4",
@@ -267,6 +293,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
             session.flush()
 
             transcript = Transcript(
+                owner_user_id=self.owner_user_id,
                 media_asset_id=media_asset.id,
                 language_code="en",
                 full_text="Only one speaker here.",
@@ -294,6 +321,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
 
         response = client.patch(
             f"/transcripts/{single_speaker_transcript_id}/review",
+            headers=self._auth_headers(),
             json={
                 "conversation_title": "Monologue",
                 "speaker_labels": {

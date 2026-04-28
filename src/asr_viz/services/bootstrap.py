@@ -1,6 +1,7 @@
 from sqlalchemy import inspect
 
 from asr_viz.db.base import Base
+from asr_viz.core.settings import settings
 from asr_viz.db.session import engine
 from asr_viz import models  # noqa: F401
 
@@ -28,4 +29,5 @@ def _assert_schema_compatibility() -> None:
 
 def init_db() -> None:
     _assert_schema_compatibility()
-    Base.metadata.create_all(bind=engine)
+    if settings.auto_create_schema:
+        Base.metadata.create_all(bind=engine)

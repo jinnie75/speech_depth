@@ -32,16 +32,19 @@ _EVENT_WRITABLE_STATUSES = {"open", "recording", "stopped", "finalizing"}
 def create_live_session(
     session: Session,
     *,
+    owner_user_id: str | None = None,
     mime_type: str | None,
     original_filename: str | None,
     sample_rate_hz: int | None,
     channel_count: int | None,
     session_metadata: dict | None,
 ) -> LiveSession:
+    resolved_owner_user_id = owner_user_id or settings.auth_dev_user_id
     storage_dir = Path(settings.media_storage_dir) / "live_sessions"
     storage_dir.mkdir(parents=True, exist_ok=True)
 
     live_session = LiveSession(
+        owner_user_id=resolved_owner_user_id,
         status="open",
         mime_type=mime_type,
         original_filename=original_filename,
@@ -58,6 +61,7 @@ def create_live_session(
     live_session.storage_path = str(storage_path)
 
     media_asset = MediaAsset(
+        owner_user_id=resolved_owner_user_id,
         source_type="live",
         source_uri=str(storage_path),
         mime_type=mime_type,
@@ -73,6 +77,7 @@ def create_live_session(
     session.flush()
 
     transcript = Transcript(
+        owner_user_id=resolved_owner_user_id,
         media_asset_id=media_asset.id,
         language_code=None,
         full_text="",
@@ -105,6 +110,14 @@ def append_live_chunk(
 
     if chunk_index is not None and chunk_index != live_session.last_chunk_index + 1:
         raise ValueError("chunk index must be sequential")
+    from asr_viz.services.usage import ensure_upload_within_limits
+
+    ensure_upload_within_limits(
+        session,
+        owner_user_id=live_session.owner_user_id,
+        current_upload_bytes=live_session.total_bytes,
+        incoming_chunk_bytes=len(chunk),
+    )
 
     path = Path(live_session.storage_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +220,7 @@ def finalize_live_session(session: Session, live_session: LiveSession) -> LiveSe
 
     if live_session.media_asset is not None:
         live_session.media_asset.checksum = checksum_for_local_file(str(media_path))
+        live_session.media_asset.size_bytes = live_session.total_bytes
         live_session.media_asset.ingest_metadata = {
             **(live_session.media_asset.ingest_metadata or {}),
             "live_session_status": "completed",

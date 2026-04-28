@@ -26,15 +26,18 @@ _MIME_EXTENSIONS = {
 def create_stream_session(
     session: Session,
     *,
+    owner_user_id: str | None = None,
     mime_type: str | None,
     original_filename: str | None,
     diarization_enabled: bool,
     ingest_metadata: dict | None,
 ) -> StreamIngestionSession:
+    resolved_owner_user_id = owner_user_id or settings.auth_dev_user_id
     storage_dir = Path(settings.media_storage_dir) / "stream_ingestion"
     storage_dir.mkdir(parents=True, exist_ok=True)
 
     session_record = StreamIngestionSession(
+        owner_user_id=resolved_owner_user_id,
         status="open",
         mime_type=mime_type,
         original_filename=original_filename,
@@ -56,6 +59,14 @@ def create_stream_session(
 def append_stream_chunk(session: Session, stream_session: StreamIngestionSession, chunk: bytes) -> StreamIngestionSession:
     if stream_session.status != "open":
         raise ValueError("stream session is not open for uploads")
+    from asr_viz.services.usage import ensure_upload_within_limits
+
+    ensure_upload_within_limits(
+        session,
+        owner_user_id=stream_session.owner_user_id,
+        current_upload_bytes=stream_session.total_bytes,
+        incoming_chunk_bytes=len(chunk),
+    )
 
     path = Path(stream_session.storage_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +92,7 @@ def finalize_stream_session(session: Session, stream_session: StreamIngestionSes
 
     job = create_job(
         session,
+        owner_user_id=stream_session.owner_user_id,
         source_uri=str(media_path),
         source_type="file",
         diarization_enabled=stream_session.diarization_enabled,

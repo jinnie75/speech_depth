@@ -4,10 +4,10 @@ from sqlalchemy import JSON, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from asr_viz.db.base import Base
-from asr_viz.models.common import IdMixin, TimestampMixin
+from asr_viz.models.common import IdMixin, OwnerMixin, TimestampMixin
 
 
-class StreamIngestionSession(IdMixin, TimestampMixin, Base):
+class StreamIngestionSession(IdMixin, OwnerMixin, TimestampMixin, Base):
     __tablename__ = "stream_ingestion_sessions"
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open", index=True)

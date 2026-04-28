@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from asr_viz.api.auth import AuthenticatedUser, attach_current_user, require_current_user
 from asr_viz.api.schemas import (
     AppendLiveTranscriptEventRequest,
     CreateJobRequest,
@@ -23,6 +24,7 @@ from asr_viz.api.schemas import (
     StreamSessionResponse,
     TranscriptResponse,
 )
+from asr_viz.core.settings import settings
 from asr_viz.db.session import get_session
 from asr_viz.models.job import ProcessingJob
 from asr_viz.models.live import LiveSession
@@ -45,11 +47,13 @@ from asr_viz.services.streaming import (
     finalize_stream_session,
     refresh_stream_session_status,
 )
+from asr_viz.services.usage import StorageQuotaExceededError, UploadTooLargeError
 
 app = FastAPI(title="ASR Viz Backend", version="0.1.0")
+app.middleware("http")(attach_current_user)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4173", "http://127.0.0.1:4173"],
+    allow_origins=list(settings.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -121,17 +125,75 @@ def _serialize_live_session(live_session: LiveSession) -> LiveSessionResponse:
     )
 
 
+def _get_owned_live_session(session: Session, session_id: str, owner_user_id: str) -> LiveSession:
+    live_session = session.scalar(
+        select(LiveSession).where(
+            LiveSession.id == session_id,
+            LiveSession.owner_user_id == owner_user_id,
+        )
+    )
+    if live_session is None:
+        raise HTTPException(status_code=404, detail="live session not found")
+    return live_session
+
+
+def _get_owned_stream_session(session: Session, session_id: str, owner_user_id: str) -> StreamIngestionSession:
+    stream_session = session.scalar(
+        select(StreamIngestionSession)
+        .where(
+            StreamIngestionSession.id == session_id,
+            StreamIngestionSession.owner_user_id == owner_user_id,
+        )
+        .options(selectinload(StreamIngestionSession.processing_job))
+    )
+    if stream_session is None:
+        raise HTTPException(status_code=404, detail="stream session not found")
+    return stream_session
+
+
+def _get_owned_job(session: Session, job_id: str, owner_user_id: str) -> ProcessingJob:
+    job = session.scalar(
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.id == job_id,
+            ProcessingJob.owner_user_id == owner_user_id,
+        )
+        .options(selectinload(ProcessingJob.media_asset), selectinload(ProcessingJob.transcript))
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+def _get_owned_transcript(session: Session, transcript_id: str, owner_user_id: str) -> Transcript:
+    transcript = session.scalar(
+        select(Transcript)
+        .where(
+            Transcript.id == transcript_id,
+            Transcript.owner_user_id == owner_user_id,
+        )
+        .options(
+            selectinload(Transcript.segments),
+            selectinload(Transcript.sentence_units).selectinload(SentenceUnit.analysis_result),
+        )
+    )
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="transcript not found")
+    return transcript
+
+
 @app.get("/jobs", response_model=JobListResponse)
 def list_jobs(
     limit: int = 20,
     offset: int = 0,
     completed_only: bool = False,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> JobListResponse:
     capped_limit = max(1, min(limit, 100))
     safe_offset = max(0, offset)
-    base_query = select(ProcessingJob)
-    total_query = select(func.count()).select_from(ProcessingJob)
+    base_query = select(ProcessingJob).where(ProcessingJob.owner_user_id == current_user.user_id)
+    total_query = select(func.count()).select_from(ProcessingJob).where(ProcessingJob.owner_user_id == current_user.user_id)
 
     if completed_only:
         completion_filters = (
@@ -167,10 +229,12 @@ def list_jobs(
 def create_processing_job(
     request: CreateJobRequest,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> ProcessingJob:
     source_type = request.source_type or infer_source_type(request.source_uri)
     job = create_job(
         session,
+        owner_user_id=current_user.user_id,
         source_uri=request.source_uri,
         source_type=source_type,
         diarization_enabled=request.diarization_enabled,
@@ -185,9 +249,11 @@ def create_processing_job(
 def create_live_capture_session(
     request: CreateLiveSessionRequest,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> LiveSessionResponse:
     live_session = create_live_session(
         session,
+        owner_user_id=current_user.user_id,
         mime_type=request.mime_type,
         original_filename=request.original_filename,
         sample_rate_hz=request.sample_rate_hz,
@@ -198,10 +264,12 @@ def create_live_capture_session(
 
 
 @app.get("/live-sessions/{session_id}", response_model=LiveSessionResponse)
-def get_live_capture_session(session_id: str, session: Session = Depends(get_session)) -> LiveSessionResponse:
-    live_session = session.get(LiveSession, session_id)
-    if live_session is None:
-        raise HTTPException(status_code=404, detail="live session not found")
+def get_live_capture_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> LiveSessionResponse:
+    live_session = _get_owned_live_session(session, session_id, current_user.user_id)
     return _serialize_live_session(live_session)
 
 
@@ -211,10 +279,9 @@ async def upload_live_session_chunk(
     request: Request,
     chunk_index: int | None = None,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> Response:
-    live_session = session.get(LiveSession, session_id)
-    if live_session is None:
-        raise HTTPException(status_code=404, detail="live session not found")
+    live_session = _get_owned_live_session(session, session_id, current_user.user_id)
 
     chunk = await request.body()
     if not chunk:
@@ -222,6 +289,8 @@ async def upload_live_session_chunk(
 
     try:
         append_live_chunk(session, live_session, chunk, chunk_index=chunk_index)
+    except (StorageQuotaExceededError, UploadTooLargeError) as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -233,10 +302,9 @@ def append_live_capture_event(
     session_id: str,
     request: AppendLiveTranscriptEventRequest,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> LiveTranscriptEventResponse:
-    live_session = session.get(LiveSession, session_id)
-    if live_session is None:
-        raise HTTPException(status_code=404, detail="live session not found")
+    live_session = _get_owned_live_session(session, session_id, current_user.user_id)
 
     try:
         event = append_live_event(
@@ -259,18 +327,22 @@ def append_live_capture_event(
 
 
 @app.get("/live-sessions/{session_id}/events", response_model=LiveSessionEventListResponse)
-def get_live_capture_events(session_id: str, session: Session = Depends(get_session)) -> LiveSessionEventListResponse:
-    live_session = session.get(LiveSession, session_id)
-    if live_session is None:
-        raise HTTPException(status_code=404, detail="live session not found")
+def get_live_capture_events(
+    session_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> LiveSessionEventListResponse:
+    live_session = _get_owned_live_session(session, session_id, current_user.user_id)
     return LiveSessionEventListResponse(events=list_live_events(session, session_id))
 
 
 @app.post("/live-sessions/{session_id}/stop", response_model=LiveSessionResponse)
-def stop_live_capture_session(session_id: str, session: Session = Depends(get_session)) -> LiveSessionResponse:
-    live_session = session.get(LiveSession, session_id)
-    if live_session is None:
-        raise HTTPException(status_code=404, detail="live session not found")
+def stop_live_capture_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> LiveSessionResponse:
+    live_session = _get_owned_live_session(session, session_id, current_user.user_id)
 
     try:
         live_session = stop_live_session(session, live_session)
@@ -281,10 +353,12 @@ def stop_live_capture_session(session_id: str, session: Session = Depends(get_se
 
 
 @app.post("/live-sessions/{session_id}/finalize", response_model=LiveSessionResponse)
-def finalize_live_capture_session(session_id: str, session: Session = Depends(get_session)) -> LiveSessionResponse:
-    live_session = session.get(LiveSession, session_id)
-    if live_session is None:
-        raise HTTPException(status_code=404, detail="live session not found")
+def finalize_live_capture_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> LiveSessionResponse:
+    live_session = _get_owned_live_session(session, session_id, current_user.user_id)
 
     try:
         live_session = finalize_live_session(session, live_session)
@@ -298,9 +372,11 @@ def finalize_live_capture_session(session_id: str, session: Session = Depends(ge
 def create_streaming_session(
     request: CreateStreamSessionRequest,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> StreamSessionResponse:
     stream_session = create_stream_session(
         session,
+        owner_user_id=current_user.user_id,
         mime_type=request.mime_type,
         original_filename=request.original_filename,
         diarization_enabled=request.diarization_enabled,
@@ -314,10 +390,9 @@ async def upload_stream_chunk(
     session_id: str,
     request: Request,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> Response:
-    stream_session = session.get(StreamIngestionSession, session_id)
-    if stream_session is None:
-        raise HTTPException(status_code=404, detail="stream session not found")
+    stream_session = _get_owned_stream_session(session, session_id, current_user.user_id)
 
     chunk = await request.body()
     if not chunk:
@@ -325,6 +400,8 @@ async def upload_stream_chunk(
 
     try:
         append_stream_chunk(session, stream_session, chunk)
+    except (StorageQuotaExceededError, UploadTooLargeError) as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -332,10 +409,12 @@ async def upload_stream_chunk(
 
 
 @app.post("/stream-sessions/{session_id}/finalize", response_model=StreamSessionResponse)
-def finalize_streaming_session(session_id: str, session: Session = Depends(get_session)) -> StreamSessionResponse:
-    stream_session = session.get(StreamIngestionSession, session_id)
-    if stream_session is None:
-        raise HTTPException(status_code=404, detail="stream session not found")
+def finalize_streaming_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> StreamSessionResponse:
+    stream_session = _get_owned_stream_session(session, session_id, current_user.user_id)
 
     try:
         stream_session = finalize_stream_session(session, stream_session)
@@ -347,14 +426,12 @@ def finalize_streaming_session(session_id: str, session: Session = Depends(get_s
 
 
 @app.get("/stream-sessions/{session_id}", response_model=StreamSessionResponse)
-def get_streaming_session(session_id: str, session: Session = Depends(get_session)) -> StreamSessionResponse:
-    stream_session = session.scalar(
-        select(StreamIngestionSession)
-        .where(StreamIngestionSession.id == session_id)
-        .options(selectinload(StreamIngestionSession.processing_job))
-    )
-    if stream_session is None:
-        raise HTTPException(status_code=404, detail="stream session not found")
+def get_streaming_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> StreamSessionResponse:
+    stream_session = _get_owned_stream_session(session, session_id, current_user.user_id)
 
     refresh_stream_session_status(stream_session)
     session.commit()
@@ -363,25 +440,23 @@ def get_streaming_session(session_id: str, session: Session = Depends(get_sessio
 
 
 @app.get("/jobs/{job_id}", response_model=JobResponse)
-def get_job(job_id: str, session: Session = Depends(get_session)) -> ProcessingJob:
-    job = session.scalar(
-        select(ProcessingJob)
-        .where(ProcessingJob.id == job_id)
-        .options(selectinload(ProcessingJob.media_asset), selectinload(ProcessingJob.transcript))
-    )
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+def get_job(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> ProcessingJob:
+    job = _get_owned_job(session, job_id, current_user.user_id)
     return job
 
 
 @app.get("/jobs/{job_id}/media")
-def get_job_media(job_id: str, session: Session = Depends(get_session)) -> Response:
-    job = session.scalar(
-        select(ProcessingJob)
-        .where(ProcessingJob.id == job_id)
-        .options(selectinload(ProcessingJob.media_asset))
-    )
-    if job is None or job.media_asset is None:
+def get_job_media(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> Response:
+    job = _get_owned_job(session, job_id, current_user.user_id)
+    if job.media_asset is None:
         raise HTTPException(status_code=404, detail="job not found")
 
     source_uri = job.media_asset.source_uri
@@ -400,17 +475,12 @@ def get_job_media(job_id: str, session: Session = Depends(get_session)) -> Respo
 
 
 @app.get("/transcripts/{transcript_id}", response_model=TranscriptResponse)
-def get_transcript(transcript_id: str, session: Session = Depends(get_session)) -> Transcript:
-    transcript = session.scalar(
-        select(Transcript)
-        .where(Transcript.id == transcript_id)
-        .options(
-            selectinload(Transcript.segments),
-            selectinload(Transcript.sentence_units).selectinload(SentenceUnit.analysis_result),
-        )
-    )
-    if transcript is None:
-        raise HTTPException(status_code=404, detail="transcript not found")
+def get_transcript(
+    transcript_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> Transcript:
+    transcript = _get_owned_transcript(session, transcript_id, current_user.user_id)
     return transcript
 
 
@@ -419,17 +489,9 @@ def update_transcript_review(
     transcript_id: str,
     request: TranscriptReviewUpdateRequest,
     session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
 ) -> Transcript:
-    transcript = session.scalar(
-        select(Transcript)
-        .where(Transcript.id == transcript_id)
-        .options(
-            selectinload(Transcript.segments),
-            selectinload(Transcript.sentence_units).selectinload(SentenceUnit.analysis_result),
-        )
-    )
-    if transcript is None:
-        raise HTTPException(status_code=404, detail="transcript not found")
+    transcript = _get_owned_transcript(session, transcript_id, current_user.user_id)
 
     allowed_speaker_ids = {sentence.speaker_id for sentence in transcript.sentence_units if sentence.speaker_id}
 
@@ -490,16 +552,15 @@ def update_transcript_review(
     return transcript
 
 
-def _delete_transcript(transcript_id: str, session: Session) -> Response:
-    transcript = session.scalar(
-        select(Transcript)
-        .where(Transcript.id == transcript_id)
-        .options(selectinload(Transcript.segments), selectinload(Transcript.sentence_units))
-    )
-    if transcript is None:
-        raise HTTPException(status_code=404, detail="transcript not found")
+def _delete_transcript(transcript_id: str, owner_user_id: str, session: Session) -> Response:
+    transcript = _get_owned_transcript(session, transcript_id, owner_user_id)
 
-    linked_job = session.scalar(select(ProcessingJob).where(ProcessingJob.transcript_id == transcript.id))
+    linked_job = session.scalar(
+        select(ProcessingJob).where(
+            ProcessingJob.transcript_id == transcript.id,
+            ProcessingJob.owner_user_id == owner_user_id,
+        )
+    )
     if linked_job is None and transcript.job_id:
         linked_job = session.get(ProcessingJob, transcript.job_id)
 
@@ -512,10 +573,18 @@ def _delete_transcript(transcript_id: str, session: Session) -> Response:
 
 
 @app.delete("/transcripts/{transcript_id}", status_code=204)
-def delete_transcript(transcript_id: str, session: Session = Depends(get_session)) -> Response:
-    return _delete_transcript(transcript_id, session)
+def delete_transcript(
+    transcript_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> Response:
+    return _delete_transcript(transcript_id, current_user.user_id, session)
 
 
 @app.post("/transcripts/{transcript_id}/delete", status_code=204)
-def delete_transcript_via_post(transcript_id: str, session: Session = Depends(get_session)) -> Response:
-    return _delete_transcript(transcript_id, session)
+def delete_transcript_via_post(
+    transcript_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthenticatedUser = Depends(require_current_user),
+) -> Response:
+    return _delete_transcript(transcript_id, current_user.user_id, session)

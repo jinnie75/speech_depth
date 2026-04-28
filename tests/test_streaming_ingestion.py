@@ -118,3 +118,28 @@ class StreamingIngestionTests(unittest.TestCase):
         self.assertEqual(completed_payload["status"], "completed")
         self.assertEqual(completed_payload["processing_job_status"], "completed")
         self.assertIsNotNone(completed_payload["transcript_id"])
+
+    def test_anonymous_session_cookie_persists_across_requests_and_isolates_other_clients(self) -> None:
+        first_client = TestClient(api_main.app)
+
+        create_response = first_client.post(
+            "/stream-sessions",
+            json={
+                "mime_type": "text/plain",
+                "original_filename": "anonymous.txt",
+                "diarization_enabled": False,
+                "preferred_language": "en",
+                "ingest_metadata": {},
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        self.assertIn("asr_viz_anon_session", first_client.cookies)
+        session_id = create_response.json()["id"]
+
+        status_response = first_client.get(f"/stream-sessions/{session_id}")
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()["id"], session_id)
+
+        second_client = TestClient(api_main.app)
+        second_status_response = second_client.get(f"/stream-sessions/{session_id}")
+        self.assertEqual(second_status_response.status_code, 404)

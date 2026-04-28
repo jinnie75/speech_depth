@@ -15,13 +15,16 @@ import type {
 
 const DEFAULT_BASE_URL = import.meta.env.VITE_ASR_API_BASE_URL ?? "http://127.0.0.1:8000";
 const DEFAULT_CHUNK_SIZE = Number(import.meta.env.VITE_UPLOAD_CHUNK_SIZE_BYTES ?? 1024 * 1024 * 2);
+const DEFAULT_FETCH_CREDENTIALS: RequestCredentials = "include";
 
 export function buildJobMediaUrl(jobId: string): string {
   return `${DEFAULT_BASE_URL}/jobs/${jobId}/media`;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${DEFAULT_BASE_URL}${path}`);
+  const response = await fetch(`${DEFAULT_BASE_URL}${path}`, {
+    credentials: DEFAULT_FETCH_CREDENTIALS,
+  });
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${path}`);
   }
@@ -74,6 +77,7 @@ export async function loadPlaybackDocument(transcriptId?: string): Promise<Playb
 export async function createStreamSession(payload: CreateStreamSessionRequest): Promise<StreamSessionResponse> {
   const response = await fetch(`${DEFAULT_BASE_URL}/stream-sessions`, {
     method: "POST",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
     headers: {
       "content-type": "application/json",
     },
@@ -88,6 +92,7 @@ export async function createStreamSession(payload: CreateStreamSessionRequest): 
 export async function createLiveSession(payload: CreateLiveSessionRequest): Promise<LiveSessionResponse> {
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions`, {
     method: "POST",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
     headers: {
       "content-type": "application/json",
     },
@@ -111,6 +116,7 @@ export async function uploadFileToStreamSession(
     const chunk = file.slice(start, end);
     const response = await fetch(`${DEFAULT_BASE_URL}/stream-sessions/${sessionId}/chunks`, {
       method: "PUT",
+      credentials: DEFAULT_FETCH_CREDENTIALS,
       headers: {
         "content-type": "application/octet-stream",
       },
@@ -132,6 +138,7 @@ export async function uploadChunkToLiveSession(
   const query = typeof chunkIndex === "number" ? `?chunk_index=${chunkIndex}` : "";
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/chunks${query}`, {
     method: "PUT",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
     headers: {
       "content-type": "application/octet-stream",
     },
@@ -145,6 +152,7 @@ export async function uploadChunkToLiveSession(
 export async function finalizeStreamSession(sessionId: string): Promise<StreamSessionResponse> {
   const response = await fetch(`${DEFAULT_BASE_URL}/stream-sessions/${sessionId}/finalize`, {
     method: "POST",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
   });
   if (!response.ok) {
     throw new Error(`Failed to finalize stream session (${response.status})`);
@@ -162,6 +170,7 @@ export async function appendLiveSessionEvent(
 ): Promise<LiveTranscriptEventResponse> {
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/events`, {
     method: "POST",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
     headers: {
       "content-type": "application/json",
     },
@@ -185,6 +194,7 @@ export async function fetchLiveSessionEvents(sessionId: string): Promise<LiveTra
 export async function stopLiveSession(sessionId: string): Promise<LiveSessionResponse> {
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/stop`, {
     method: "POST",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
   });
   if (!response.ok) {
     throw new Error(`Failed to stop live session (${response.status})`);
@@ -195,6 +205,7 @@ export async function stopLiveSession(sessionId: string): Promise<LiveSessionRes
 export async function finalizeLiveSession(sessionId: string): Promise<LiveSessionResponse> {
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/finalize`, {
     method: "POST",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
   });
   if (!response.ok) {
     throw new Error(`Failed to finalize live session (${response.status})`);
@@ -208,6 +219,7 @@ export async function saveTranscriptReview(
 ): Promise<PlaybackDocument> {
   const response = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}/review`, {
     method: "PATCH",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
     headers: {
       "content-type": "application/json",
     },
@@ -245,6 +257,7 @@ export async function saveTranscriptReview(
 export async function deleteTranscript(transcriptId: string): Promise<void> {
   const response = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}`, {
     method: "DELETE",
+    credentials: DEFAULT_FETCH_CREDENTIALS,
   });
   if (response.ok) {
     return;
@@ -253,6 +266,7 @@ export async function deleteTranscript(transcriptId: string): Promise<void> {
   if (response.status === 405) {
     const fallbackResponse = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}/delete`, {
       method: "POST",
+      credentials: DEFAULT_FETCH_CREDENTIALS,
     });
     if (fallbackResponse.ok) {
       return;

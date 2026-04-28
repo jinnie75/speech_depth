@@ -4,10 +4,10 @@ from sqlalchemy import JSON, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from asr_viz.db.base import Base
-from asr_viz.models.common import IdMixin, TimestampMixin
+from asr_viz.models.common import IdMixin, OwnerMixin, TimestampMixin
 
 
-class MediaAsset(IdMixin, TimestampMixin, Base):
+class MediaAsset(IdMixin, OwnerMixin, TimestampMixin, Base):
     __tablename__ = "media_assets"
 
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -15,6 +15,7 @@ class MediaAsset(IdMixin, TimestampMixin, Base):
     mime_type: Mapped[str | None] = mapped_column(String(255))
     checksum: Mapped[str | None] = mapped_column(String(128))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
     ingest_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
     jobs = relationship("ProcessingJob", back_populates="media_asset", cascade="all, delete-orphan")

@@ -20,6 +20,8 @@ from asr_viz import cli
 
 
 class CliTests(unittest.TestCase):
+    owner_user_id = "cli-test-user"
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         database_path = Path(self.temp_dir.name) / "test_cli.db"
@@ -51,6 +53,9 @@ class CliTests(unittest.TestCase):
             yield session
         finally:
             session.close()
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {"x-asr-viz-user-id": self.owner_user_id}
 
     def test_submit_status_and_transcript_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -114,6 +119,7 @@ class CliTests(unittest.TestCase):
             with self.session_factory() as session:
                 cli.create_job(
                     session,
+                    owner_user_id=self.owner_user_id,
                     source_uri=str(source),
                     source_type="file",
                     diarization_enabled=False,
@@ -123,7 +129,7 @@ class CliTests(unittest.TestCase):
                 )
 
             client = TestClient(api_main.app)
-            response = client.get("/jobs")
+            response = client.get("/jobs", headers=self._auth_headers())
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertEqual(len(payload["jobs"]), 1)

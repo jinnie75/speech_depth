@@ -6,10 +6,10 @@ from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from asr_viz.db.base import Base
-from asr_viz.models.common import IdMixin, TimestampMixin
+from asr_viz.models.common import IdMixin, OwnerMixin, TimestampMixin
 
 
-class Transcript(IdMixin, TimestampMixin, Base):
+class Transcript(IdMixin, OwnerMixin, TimestampMixin, Base):
     __tablename__ = "transcripts"
 
     media_asset_id: Mapped[str] = mapped_column(ForeignKey("media_assets.id"), nullable=False, index=True)

@@ -16,6 +16,10 @@ def generate_uuid() -> str:
     return str(uuid.uuid4())
 
 
+def default_owner_user_id() -> str:
+    return "anonymous-owner-placeholder"
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -28,6 +32,15 @@ class TimestampMixin:
 
 class IdMixin:
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+
+
+class OwnerMixin:
+    owner_user_id: Mapped[str] = mapped_column(
+        String(255),
+        default=default_owner_user_id,
+        nullable=False,
+        index=True,
+    )
 
 
 class JobStatus(str, enum.Enum):

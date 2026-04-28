@@ -57,12 +57,59 @@ The frontend expects the existing `/jobs` and `/transcripts/{id}` endpoints and 
 ## Environment Variables
 
 - `DATABASE_URL`
+- `APP_ENV`
+- `AUTO_CREATE_SCHEMA`
+- `AUTH_PROVIDER`
+- `REQUIRE_AUTH`
+- `AUTH_DEV_USER_ID`
+- `ANONYMOUS_SESSION_COOKIE_NAME`
+- `ANONYMOUS_SESSION_COOKIE_MAX_AGE_SECONDS`
+- `ANONYMOUS_SESSION_COOKIE_SECURE`
+- `ANONYMOUS_SESSION_COOKIE_DOMAIN`
+- `CLERK_ISSUER_URL`
+- `CLERK_AUDIENCE`
+- `CLERK_JWKS_URL`
 - `HUGGINGFACE_TOKEN`
 - `ASR_MODEL`
 - `DIARIZATION_MODEL`
 - `DIARIZATION_NUM_SPEAKERS`
 - `JOB_POLL_INTERVAL_SECONDS`
 - `ENABLE_MOCK_TRANSCRIPTION`
+- `MAX_UPLOAD_SIZE_BYTES`
+- `PER_USER_STORAGE_QUOTA_BYTES`
+- `LIVE_MODE_ENABLED`
+- `STORAGE_BACKEND`
+- `MEDIA_STORAGE_DIR`
+- `SIGNED_URL_TTL_SECONDS`
+- `R2_ACCOUNT_ID`
+- `R2_BUCKET_NAME`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+
+## Public Deployment Foundation
+
+The backend now includes the first public-web foundation slice:
+
+- owner scoping on jobs, transcripts, stream sessions, and live sessions
+- anonymous browser-session ownership via `HttpOnly` cookie, with optional Clerk bearer auth support
+- per-upload and per-user storage limits
+- Alembic scaffolding for managed schema migrations
+
+For local development and anonymous MVP deployment, `REQUIRE_AUTH=false` uses a durable anonymous session cookie so uploads, transcript edits, and playback stay attached to the same browser session across pages and refreshes.
+
+For production with anonymous-first access:
+
+1. set `REQUIRE_AUTH=false`
+2. set `AUTH_PROVIDER=clerk` only if you want to accept optional Clerk bearer tokens later
+3. configure `DATABASE_URL` for Postgres
+4. set cookie security vars for your deployed environment
+5. run migrations before starting the API:
+
+```bash
+PYTHONPATH=src alembic upgrade head
+```
+
+Deployment setup is tracked in the checklist at [docs/public-deployment.md](/Users/jinheeshim/Documents/ITP/thesis/v5_asr_viz/docs/public-deployment.md).
 
 ## Speaker Diarization
 

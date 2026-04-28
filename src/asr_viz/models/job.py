@@ -7,10 +7,10 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from asr_viz.db.base import Base
-from asr_viz.models.common import IdMixin, JobStage, JobStatus, TimestampMixin
+from asr_viz.models.common import IdMixin, JobStage, JobStatus, OwnerMixin, TimestampMixin
 
 
-class ProcessingJob(IdMixin, TimestampMixin, Base):
+class ProcessingJob(IdMixin, OwnerMixin, TimestampMixin, Base):
     __tablename__ = "processing_jobs"
 
     media_asset_id: Mapped[str] = mapped_column(ForeignKey("media_assets.id"), nullable=False, index=True)
