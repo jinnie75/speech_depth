@@ -37,6 +37,7 @@ This version assumes:
 - [ ] Create a Neon project and database.
 - [ ] Copy the pooled or direct Postgres connection string.
 - [ ] Save it for Render as `DATABASE_URL`.
+- [ ] If Neon gives you a `postgresql://...` or `postgres://...` URL, that is fine. The app now normalizes it to SQLAlchemy's `postgresql+psycopg://...` form internally.
 - [ ] Do not commit the Postgres URL to GitHub.
 
 ## 2. Clerk
