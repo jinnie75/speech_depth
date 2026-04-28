@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 from asr_viz.core.settings import settings
@@ -25,6 +26,11 @@ def _mask_token(token: str | None) -> str:
     return f"len={len(normalized)} prefix={normalized[:6]} suffix={normalized[-4:]}"
 
 
+def _configure_huggingface_environment() -> None:
+    if settings.huggingface_token and not os.getenv("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = settings.huggingface_token
+
+
 def _log_worker_startup_configuration() -> None:
     diarization_provider_name = "pyannote" if settings.huggingface_token else "noop"
     print(
@@ -33,7 +39,8 @@ def _log_worker_startup_configuration() -> None:
         f"worker_name={settings.worker_name} "
         f"diarization_provider={diarization_provider_name} "
         f"diarization_model={settings.diarization_model} "
-        f"huggingface_token={_mask_token(settings.huggingface_token)}"
+        f"huggingface_token={_mask_token(settings.huggingface_token)} "
+        f"hf_token_env={_mask_token(os.getenv('HF_TOKEN'))}"
     )
 
 
@@ -56,6 +63,7 @@ def process_next_job(pipeline: ProcessingPipeline) -> bool:
 
 def run_worker(*, once: bool = False) -> None:
     init_db()
+    _configure_huggingface_environment()
     _log_worker_startup_configuration()
     pipeline = build_processing_pipeline()
     while True:
