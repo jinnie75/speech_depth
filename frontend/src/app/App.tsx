@@ -1540,6 +1540,7 @@ export function App() {
   const landscapeRef = useRef<ConversationLandscapeHandle | null>(null);
   const exportLandscapeRef = useRef<ConversationLandscapeHandle | null>(null);
   const playbackDocumentCacheRef = useRef(new Map<string, PlaybackDocument>());
+  const transcriptSelectionRequestRef = useRef(0);
 
   const loadCachedPlaybackDocument = async (transcriptId: string): Promise<PlaybackDocument> => {
     const cachedDocument = playbackDocumentCacheRef.current.get(transcriptId);
@@ -1602,16 +1603,41 @@ export function App() {
     preferredMode?: AppMode;
     forcePreviewRefresh?: boolean;
   }) => {
-    const payload = await loadCachedPlaybackDocument(transcriptId);
-    let resolvedMediaSrc = mediaOption.mediaSrc;
-    let managedMediaObjectUrl: string | null = null;
+    const requestId = transcriptSelectionRequestRef.current + 1;
+    transcriptSelectionRequestRef.current = requestId;
+    const nextMode = preferredMode ?? (mediaOption.reviewStatus === "completed" ? "playback" : "review");
 
-    if (!resolvedMediaSrc && mediaOption.mediaSourceUri) {
-      managedMediaObjectUrl = await fetchJobMediaBlobUrl(mediaOption.jobId);
-      resolvedMediaSrc = managedMediaObjectUrl;
+    startTransition(() => {
+      setSelectedProcessedTranscriptId(mediaOption.transcriptId);
+      setTranscriptLoadStatus("loading");
+      setError(null);
+      setMode(nextMode);
+      setDocument(null);
+      setMediaName(mediaOption.label);
+      setPlaybackStarted(false);
+      setCurrentTimeMs(0);
+      setIsPlaybackComplete(false);
+    });
+
+    const mediaSrcPromise =
+      !mediaOption.mediaSrc && mediaOption.mediaSourceUri
+        ? fetchJobMediaBlobUrl(mediaOption.jobId)
+        : Promise.resolve<string | null>(null);
+    const [payload, managedMediaObjectUrl] = await Promise.all([
+      loadCachedPlaybackDocument(transcriptId),
+      mediaSrcPromise,
+    ]);
+
+    if (requestId !== transcriptSelectionRequestRef.current) {
+      if (managedMediaObjectUrl) {
+        URL.revokeObjectURL(managedMediaObjectUrl);
+      }
+      return;
     }
 
-    if (mediaObjectUrlRef.current) {
+    const resolvedMediaSrc = managedMediaObjectUrl ?? mediaOption.mediaSrc;
+
+    if (mediaObjectUrlRef.current && mediaObjectUrlRef.current !== managedMediaObjectUrl) {
       URL.revokeObjectURL(mediaObjectUrlRef.current);
       mediaObjectUrlRef.current = null;
     }
@@ -2454,10 +2480,6 @@ export function App() {
       return;
     }
 
-    setSelectedProcessedTranscriptId(option.transcriptId);
-    setTranscriptLoadStatus("loading");
-    setError(null);
-
     try {
       await loadTranscriptIntoApp({
         transcriptId: option.transcriptId,
@@ -3193,6 +3215,17 @@ export function App() {
         </section>
       ) : null}
 
+      {mode === "review" && transcriptLoadStatus === "loading" ? (
+        <section className="review-top-stack">
+          <article className="surface-card review-media review-header-card">
+            <div className="empty-state">
+              <p>Loading transcript...</p>
+              <p>Pulling the archive document and media into the editor.</p>
+            </div>
+          </article>
+        </section>
+      ) : null}
+
       {mode === "review" && document && reviewDraft ? (
         <>
           <section className="review-top-stack">
@@ -3477,6 +3510,24 @@ export function App() {
             </section>
           </div>
         </div>
+      ) : null}
+
+      {mode === "playback" && transcriptLoadStatus === "loading" ? (
+        <>
+          <section className="playback-header">
+            <div className="playback-header__summary">
+              <div className="playback-header__title-row">
+                <h2>{mediaName || "Loading conversation"}</h2>
+              </div>
+            </div>
+          </section>
+          <section className="terrain-grid">
+            <div className="empty-state">
+              <p>Loading conversation...</p>
+              <p>Fetching the transcript and media for this archive.</p>
+            </div>
+          </section>
+        </>
       ) : null}
 
       {mode === "playback" && document ? (

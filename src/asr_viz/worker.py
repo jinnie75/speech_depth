@@ -14,6 +14,29 @@ from asr_viz.services.providers import (
 )
 
 
+def _mask_token(token: str | None) -> str:
+    if token is None:
+        return "missing"
+    normalized = token.strip()
+    if not normalized:
+        return "blank"
+    if len(normalized) <= 10:
+        return f"len={len(normalized)} value={normalized}"
+    return f"len={len(normalized)} prefix={normalized[:6]} suffix={normalized[-4:]}"
+
+
+def _log_worker_startup_configuration() -> None:
+    diarization_provider_name = "pyannote" if settings.huggingface_token else "noop"
+    print(
+        "worker_startup "
+        f"app_env={settings.app_env} "
+        f"worker_name={settings.worker_name} "
+        f"diarization_provider={diarization_provider_name} "
+        f"diarization_model={settings.diarization_model} "
+        f"huggingface_token={_mask_token(settings.huggingface_token)}"
+    )
+
+
 def build_processing_pipeline() -> ProcessingPipeline:
     return ProcessingPipeline(
         transcription_provider=build_transcription_provider(),
@@ -33,6 +56,7 @@ def process_next_job(pipeline: ProcessingPipeline) -> bool:
 
 def run_worker(*, once: bool = False) -> None:
     init_db()
+    _log_worker_startup_configuration()
     pipeline = build_processing_pipeline()
     while True:
         processed = process_next_job(pipeline)
