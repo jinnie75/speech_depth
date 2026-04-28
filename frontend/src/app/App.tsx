@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, startTransition, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { ConversationLandscape } from "../components/ConversationLandscape";
@@ -327,7 +327,13 @@ function MuteIcon() {
   );
 }
 
-function ArchivePreviewCard({ isActive, option, preview, disabled = false, onSelect }: ArchivePreviewCardProps) {
+const ArchivePreviewCard = memo(function ArchivePreviewCard({
+  isActive,
+  option,
+  preview,
+  disabled = false,
+  onSelect,
+}: ArchivePreviewCardProps) {
   const cardRef = useRef<HTMLButtonElement | null>(null);
   const [isVisible, setIsVisible] = useState(false);
 
@@ -407,6 +413,18 @@ function ArchivePreviewCard({ isActive, option, preview, disabled = false, onSel
         )}
       </div>
     </button>
+  );
+}, areArchivePreviewCardPropsEqual);
+
+function areArchivePreviewCardPropsEqual(
+  previousProps: ArchivePreviewCardProps,
+  nextProps: ArchivePreviewCardProps,
+): boolean {
+  return (
+    previousProps.isActive === nextProps.isActive &&
+    previousProps.option === nextProps.option &&
+    previousProps.preview === nextProps.preview &&
+    previousProps.disabled === nextProps.disabled
   );
 }
 
@@ -1521,6 +1539,18 @@ export function App() {
   const liveRecognitionRestartEnabledRef = useRef(false);
   const landscapeRef = useRef<ConversationLandscapeHandle | null>(null);
   const exportLandscapeRef = useRef<ConversationLandscapeHandle | null>(null);
+  const playbackDocumentCacheRef = useRef(new Map<string, PlaybackDocument>());
+
+  const loadCachedPlaybackDocument = async (transcriptId: string): Promise<PlaybackDocument> => {
+    const cachedDocument = playbackDocumentCacheRef.current.get(transcriptId);
+    if (cachedDocument) {
+      return cachedDocument;
+    }
+
+    const nextDocument = await loadPlaybackDocument(transcriptId);
+    playbackDocumentCacheRef.current.set(transcriptId, nextDocument);
+    return nextDocument;
+  };
 
   const refreshProcessedTranscriptOptions = async ({
     reset = false,
@@ -1565,13 +1595,14 @@ export function App() {
     transcriptId,
     mediaOption,
     preferredMode,
+    forcePreviewRefresh = false,
   }: {
     transcriptId: string;
     mediaOption: ProcessedTranscriptOption;
     preferredMode?: AppMode;
+    forcePreviewRefresh?: boolean;
   }) => {
-    setTranscriptLoadStatus("loading");
-    const payload = await loadPlaybackDocument(transcriptId);
+    const payload = await loadCachedPlaybackDocument(transcriptId);
     let resolvedMediaSrc = mediaOption.mediaSrc;
     let managedMediaObjectUrl: string | null = null;
 
@@ -1588,23 +1619,31 @@ export function App() {
       mediaObjectUrlRef.current = managedMediaObjectUrl;
     }
 
-    setDocument(payload);
-    setArchivePreviews((currentPreviews) => ({
-      ...currentPreviews,
-      [transcriptId]: buildArchivePreviewData(payload),
-    }));
-    setMediaSrc(resolvedMediaSrc);
-    setMediaName(mediaOption.label);
-    setSelectedProcessedTranscriptId(mediaOption.transcriptId);
-    setPlaybackStarted(false);
-    setCurrentTimeMs(0);
-    setIsPlaybackComplete(false);
-    setError(null);
-    setPendingFile(null);
-    setUploadProgress(null);
-    setStreamSession(null);
-    setTranscriptLoadStatus(payload.sentenceUnits.length > 0 ? "ready" : "empty");
-    setMode(preferredMode ?? (payload.reviewStatus === "completed" ? "playback" : "review"));
+    startTransition(() => {
+      setDocument(payload);
+      setArchivePreviews((currentPreviews) => {
+        if (!forcePreviewRefresh && currentPreviews[transcriptId] !== undefined) {
+          return currentPreviews;
+        }
+
+        return {
+          ...currentPreviews,
+          [transcriptId]: buildArchivePreviewData(payload),
+        };
+      });
+      setMediaSrc(resolvedMediaSrc);
+      setMediaName(mediaOption.label);
+      setSelectedProcessedTranscriptId(mediaOption.transcriptId);
+      setPlaybackStarted(false);
+      setCurrentTimeMs(0);
+      setIsPlaybackComplete(false);
+      setError(null);
+      setPendingFile(null);
+      setUploadProgress(null);
+      setStreamSession(null);
+      setTranscriptLoadStatus(payload.sentenceUnits.length > 0 ? "ready" : "empty");
+      setMode(preferredMode ?? (payload.reviewStatus === "completed" ? "playback" : "review"));
+    });
   };
 
   useEffect(() => {
@@ -1617,21 +1656,29 @@ export function App() {
         }
 
         const matchingOption = options.find((option) => option.transcriptId === PRELOAD_TRANSCRIPT_ID);
-        const payload = await loadPlaybackDocument(PRELOAD_TRANSCRIPT_ID);
+        const payload = await loadCachedPlaybackDocument(PRELOAD_TRANSCRIPT_ID);
         if (!active) {
           return;
         }
 
-        setDocument(payload);
-        setArchivePreviews((currentPreviews) => ({
-          ...currentPreviews,
-          [PRELOAD_TRANSCRIPT_ID]: buildArchivePreviewData(payload),
-        }));
-        setMediaSrc(matchingOption?.mediaSrc ?? DEFAULT_MEDIA_SRC);
-        setMediaName(matchingOption?.label ?? "Configured media source");
-        setSelectedProcessedTranscriptId(matchingOption?.transcriptId ?? "");
-        setTranscriptLoadStatus(payload.sentenceUnits.length > 0 ? "ready" : "empty");
-        setMode(payload.reviewStatus === "completed" ? "playback" : "review");
+        startTransition(() => {
+          setDocument(payload);
+          setArchivePreviews((currentPreviews) => {
+            if (currentPreviews[PRELOAD_TRANSCRIPT_ID] !== undefined) {
+              return currentPreviews;
+            }
+
+            return {
+              ...currentPreviews,
+              [PRELOAD_TRANSCRIPT_ID]: buildArchivePreviewData(payload),
+            };
+          });
+          setMediaSrc(matchingOption?.mediaSrc ?? DEFAULT_MEDIA_SRC);
+          setMediaName(matchingOption?.label ?? "Configured media source");
+          setSelectedProcessedTranscriptId(matchingOption?.transcriptId ?? "");
+          setTranscriptLoadStatus(payload.sentenceUnits.length > 0 ? "ready" : "empty");
+          setMode(payload.reviewStatus === "completed" ? "playback" : "review");
+        });
       })
       .catch((caughtError: unknown) => {
         if (!active) {
@@ -1703,7 +1750,7 @@ export function App() {
     void Promise.all(
       missingOptions.map(async (option) => {
         try {
-          const playbackDocument = await loadPlaybackDocument(option.transcriptId);
+          const playbackDocument = await loadCachedPlaybackDocument(option.transcriptId);
           return [option.transcriptId, buildArchivePreviewData(playbackDocument)] as const;
         } catch {
           return [option.transcriptId, null] as const;
@@ -1762,6 +1809,7 @@ export function App() {
               return;
             }
             if (nextDocument.sentenceUnits.length > 0) {
+              playbackDocumentCacheRef.current.set(nextSession.transcript_id, nextDocument);
               loadedDocument = nextDocument;
               break;
             }
@@ -2270,6 +2318,7 @@ export function App() {
             archivePreview: null,
           },
           preferredMode: "review",
+          forcePreviewRefresh: true,
         });
       } else {
         setMode("create");
@@ -2405,6 +2454,10 @@ export function App() {
       return;
     }
 
+    setSelectedProcessedTranscriptId(option.transcriptId);
+    setTranscriptLoadStatus("loading");
+    setError(null);
+
     try {
       await loadTranscriptIntoApp({
         transcriptId: option.transcriptId,
@@ -2483,6 +2536,7 @@ export function App() {
         document.transcriptId,
         buildReviewPayload(document, reviewDraft, nextStatus),
       );
+      playbackDocumentCacheRef.current.set(nextDocument.transcriptId, nextDocument);
       setDocument(nextDocument);
       setArchivePreviews((currentPreviews) => ({
         ...currentPreviews,
@@ -2508,6 +2562,7 @@ export function App() {
 
     try {
       await deleteTranscript(document.transcriptId);
+      playbackDocumentCacheRef.current.delete(document.transcriptId);
       setIsDeleteConfirmOpen(false);
       setDocument(null);
       setReviewDraft(null);
