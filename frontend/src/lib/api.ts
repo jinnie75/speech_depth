@@ -16,14 +16,52 @@ import type {
 const DEFAULT_BASE_URL = import.meta.env.VITE_ASR_API_BASE_URL ?? "http://127.0.0.1:8000";
 const DEFAULT_CHUNK_SIZE = Number(import.meta.env.VITE_UPLOAD_CHUNK_SIZE_BYTES ?? 1024 * 1024 * 2);
 const DEFAULT_FETCH_CREDENTIALS: RequestCredentials = "include";
+const REQUIRE_AUTH = String(import.meta.env.VITE_REQUIRE_AUTH ?? "false").toLowerCase() === "true";
+const ANONYMOUS_USER_STORAGE_KEY = "asr_viz.anonymous_user_id";
 
 export function buildJobMediaUrl(jobId: string): string {
   return `${DEFAULT_BASE_URL}/jobs/${jobId}/media`;
 }
 
+function buildAnonymousUserId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `anon_local_${crypto.randomUUID()}`;
+  }
+  return `anon_local_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getAnonymousUserId(): string | null {
+  if (REQUIRE_AUTH || typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const existingValue = window.localStorage.getItem(ANONYMOUS_USER_STORAGE_KEY)?.trim();
+    if (existingValue) {
+      return existingValue;
+    }
+
+    const nextValue = buildAnonymousUserId();
+    window.localStorage.setItem(ANONYMOUS_USER_STORAGE_KEY, nextValue);
+    return nextValue;
+  } catch {
+    return null;
+  }
+}
+
+function buildRequestHeaders(headers?: HeadersInit): Headers {
+  const requestHeaders = new Headers(headers);
+  const anonymousUserId = getAnonymousUserId();
+  if (anonymousUserId) {
+    requestHeaders.set("x-asr-viz-user-id", anonymousUserId);
+  }
+  return requestHeaders;
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const response = await fetch(`${DEFAULT_BASE_URL}${path}`, {
     credentials: DEFAULT_FETCH_CREDENTIALS,
+    headers: buildRequestHeaders(),
   });
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${path}`);
@@ -78,9 +116,9 @@ export async function createStreamSession(payload: CreateStreamSessionRequest): 
   const response = await fetch(`${DEFAULT_BASE_URL}/stream-sessions`, {
     method: "POST",
     credentials: DEFAULT_FETCH_CREDENTIALS,
-    headers: {
+    headers: buildRequestHeaders({
       "content-type": "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -93,9 +131,9 @@ export async function createLiveSession(payload: CreateLiveSessionRequest): Prom
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions`, {
     method: "POST",
     credentials: DEFAULT_FETCH_CREDENTIALS,
-    headers: {
+    headers: buildRequestHeaders({
       "content-type": "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -117,9 +155,9 @@ export async function uploadFileToStreamSession(
     const response = await fetch(`${DEFAULT_BASE_URL}/stream-sessions/${sessionId}/chunks`, {
       method: "PUT",
       credentials: DEFAULT_FETCH_CREDENTIALS,
-      headers: {
+      headers: buildRequestHeaders({
         "content-type": "application/octet-stream",
-      },
+      }),
       body: chunk,
     });
     if (!response.ok) {
@@ -139,9 +177,9 @@ export async function uploadChunkToLiveSession(
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/chunks${query}`, {
     method: "PUT",
     credentials: DEFAULT_FETCH_CREDENTIALS,
-    headers: {
+    headers: buildRequestHeaders({
       "content-type": "application/octet-stream",
-    },
+    }),
     body: chunk,
   });
   if (!response.ok) {
@@ -153,6 +191,7 @@ export async function finalizeStreamSession(sessionId: string): Promise<StreamSe
   const response = await fetch(`${DEFAULT_BASE_URL}/stream-sessions/${sessionId}/finalize`, {
     method: "POST",
     credentials: DEFAULT_FETCH_CREDENTIALS,
+    headers: buildRequestHeaders(),
   });
   if (!response.ok) {
     throw new Error(`Failed to finalize stream session (${response.status})`);
@@ -171,9 +210,9 @@ export async function appendLiveSessionEvent(
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/events`, {
     method: "POST",
     credentials: DEFAULT_FETCH_CREDENTIALS,
-    headers: {
+    headers: buildRequestHeaders({
       "content-type": "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -195,6 +234,7 @@ export async function stopLiveSession(sessionId: string): Promise<LiveSessionRes
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/stop`, {
     method: "POST",
     credentials: DEFAULT_FETCH_CREDENTIALS,
+    headers: buildRequestHeaders(),
   });
   if (!response.ok) {
     throw new Error(`Failed to stop live session (${response.status})`);
@@ -206,11 +246,23 @@ export async function finalizeLiveSession(sessionId: string): Promise<LiveSessio
   const response = await fetch(`${DEFAULT_BASE_URL}/live-sessions/${sessionId}/finalize`, {
     method: "POST",
     credentials: DEFAULT_FETCH_CREDENTIALS,
+    headers: buildRequestHeaders(),
   });
   if (!response.ok) {
     throw new Error(`Failed to finalize live session (${response.status})`);
   }
   return (await response.json()) as LiveSessionResponse;
+}
+
+export async function fetchJobMediaBlobUrl(jobId: string): Promise<string> {
+  const response = await fetch(buildJobMediaUrl(jobId), {
+    credentials: DEFAULT_FETCH_CREDENTIALS,
+    headers: buildRequestHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load media (${response.status})`);
+  }
+  return URL.createObjectURL(await response.blob());
 }
 
 export async function saveTranscriptReview(
@@ -220,9 +272,9 @@ export async function saveTranscriptReview(
   const response = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}/review`, {
     method: "PATCH",
     credentials: DEFAULT_FETCH_CREDENTIALS,
-    headers: {
+    headers: buildRequestHeaders({
       "content-type": "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -258,6 +310,7 @@ export async function deleteTranscript(transcriptId: string): Promise<void> {
   const response = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}`, {
     method: "DELETE",
     credentials: DEFAULT_FETCH_CREDENTIALS,
+    headers: buildRequestHeaders(),
   });
   if (response.ok) {
     return;
@@ -267,6 +320,7 @@ export async function deleteTranscript(transcriptId: string): Promise<void> {
     const fallbackResponse = await fetch(`${DEFAULT_BASE_URL}/transcripts/${transcriptId}/delete`, {
       method: "POST",
       credentials: DEFAULT_FETCH_CREDENTIALS,
+      headers: buildRequestHeaders(),
     });
     if (fallbackResponse.ok) {
       return;

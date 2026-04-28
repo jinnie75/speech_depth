@@ -10,11 +10,11 @@ import type {
 } from "../components/ConversationLandscape";
 import {
   appendLiveSessionEvent,
-  buildJobMediaUrl,
   createLiveSession,
   createStreamSession,
   deleteTranscript,
   fetchCompletedJobs,
+  fetchJobMediaBlobUrl,
   finalizeLiveSession,
   fetchLiveSession,
   fetchStreamSession,
@@ -229,6 +229,7 @@ interface ProcessedTranscriptOption {
   transcriptId: string;
   label: string;
   mediaSrc: string;
+  mediaSourceUri: string | null;
   createdAt: string;
   reviewStatus: ReviewStatus;
   archivePreview: ArchivePreviewData | null;
@@ -1060,6 +1061,7 @@ function buildProcessedTranscriptOptions(jobs: JobSummary[]): ProcessedTranscrip
       transcriptId: job.transcript_id ?? "",
       label: getProcessedTranscriptLabel(job),
       mediaSrc: getProcessedTranscriptMediaSrc(job),
+      mediaSourceUri: job.media_source_uri,
       createdAt: job.created_at,
       reviewStatus: job.review_status,
       archivePreview: deserializeArchivePreview(job.archive_preview),
@@ -1136,7 +1138,7 @@ function getProcessedTranscriptMediaSrc(job: JobSummary): string {
     return sourceUri;
   }
 
-  return buildJobMediaUrl(job.id);
+  return "";
 }
 
 function formatTranscriptCreatedAt(value: string): string {
@@ -1561,27 +1563,39 @@ export function App() {
 
   const loadTranscriptIntoApp = async ({
     transcriptId,
-    mediaSource,
-    mediaLabel,
-    selectedTranscriptId,
+    mediaOption,
     preferredMode,
   }: {
     transcriptId: string;
-    mediaSource: string;
-    mediaLabel: string;
-    selectedTranscriptId: string;
+    mediaOption: ProcessedTranscriptOption;
     preferredMode?: AppMode;
   }) => {
     setTranscriptLoadStatus("loading");
     const payload = await loadPlaybackDocument(transcriptId);
+    let resolvedMediaSrc = mediaOption.mediaSrc;
+    let managedMediaObjectUrl: string | null = null;
+
+    if (!resolvedMediaSrc && mediaOption.mediaSourceUri) {
+      managedMediaObjectUrl = await fetchJobMediaBlobUrl(mediaOption.jobId);
+      resolvedMediaSrc = managedMediaObjectUrl;
+    }
+
+    if (mediaObjectUrlRef.current) {
+      URL.revokeObjectURL(mediaObjectUrlRef.current);
+      mediaObjectUrlRef.current = null;
+    }
+    if (managedMediaObjectUrl) {
+      mediaObjectUrlRef.current = managedMediaObjectUrl;
+    }
+
     setDocument(payload);
     setArchivePreviews((currentPreviews) => ({
       ...currentPreviews,
       [transcriptId]: buildArchivePreviewData(payload),
     }));
-    setMediaSrc(mediaSource);
-    setMediaName(mediaLabel);
-    setSelectedProcessedTranscriptId(selectedTranscriptId);
+    setMediaSrc(resolvedMediaSrc);
+    setMediaName(mediaOption.label);
+    setSelectedProcessedTranscriptId(mediaOption.transcriptId);
     setPlaybackStarted(false);
     setCurrentTimeMs(0);
     setIsPlaybackComplete(false);
@@ -2245,9 +2259,16 @@ export function App() {
       if (finalizedSession.transcript_id) {
         await loadTranscriptIntoApp({
           transcriptId: finalizedSession.transcript_id,
-          mediaSource: objectUrl,
-          mediaLabel: finalizedSession.original_filename || "Live session",
-          selectedTranscriptId: "",
+          mediaOption: {
+            jobId: finalizedSession.processing_job_id || finalizedSession.id,
+            transcriptId: finalizedSession.transcript_id,
+            label: finalizedSession.original_filename || "Live session",
+            mediaSrc: objectUrl,
+            mediaSourceUri: null,
+            createdAt: finalizedSession.created_at,
+            reviewStatus: "not_started",
+            archivePreview: null,
+          },
           preferredMode: "review",
         });
       } else {
@@ -2387,9 +2408,7 @@ export function App() {
     try {
       await loadTranscriptIntoApp({
         transcriptId: option.transcriptId,
-        mediaSource: option.mediaSrc,
-        mediaLabel: option.label,
-        selectedTranscriptId: option.transcriptId,
+        mediaOption: option,
       });
     } catch (caughtError: unknown) {
       setError(caughtError instanceof Error ? caughtError.message : "Unknown transcript selection error");
