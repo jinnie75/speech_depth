@@ -27,7 +27,7 @@ transcription = [
 ]
 diarization = [
   "pyannote.audio==3.3.2",
-  "torch==2.2.0",
+  "torch==2.2.2",
   "torchaudio==2.2.2",
 ]
 
