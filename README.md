@@ -123,6 +123,8 @@ python3 -m asr_viz.cli submit /absolute/path/to/file.mp4 --mime-type video/mp4 -
 
 Set `DIARIZATION_NUM_SPEAKERS=2` in `.env.local` if you want to pin the speaker count.
 
+If you are using the default `pyannote/speaker-diarization-3.1` model, the Hugging Face account behind `HUGGINGFACE_TOKEN` must also have accepted access to that gated repository. A valid token without model access will now leave the transcript completed, but speaker labels will be skipped and the job will record the diarization warning in `stage_details`.
+
 Sentence units will then include `speaker_id` and `speaker_confidence` when the diarization model can assign them.
 
 ## Scene Clusters

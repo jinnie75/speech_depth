@@ -23,6 +23,10 @@ class NoOpDiarizationProvider(DiarizationProvider):
     model_version = "noop-diarizer:v1"
 
 
+class DiarizationUnavailableError(RuntimeError):
+    """Raised when diarization cannot run because the provider is unavailable."""
+
+
 @dataclass(frozen=True)
 class SpeakerTurn:
     speaker_id: str
@@ -66,13 +70,18 @@ class PyannoteDiarizationProvider(DiarizationProvider):
             try:
                 from pyannote.audio import Pipeline
             except ImportError as exc:
-                raise RuntimeError(
+                raise DiarizationUnavailableError(
                     "pyannote.audio is not installed. Install with `pip install '.[diarization]'`."
                 ) from exc
             try:
                 self._pipeline = Pipeline.from_pretrained(self._model_name, token=self._token)
             except TypeError:
-                self._pipeline = Pipeline.from_pretrained(self._model_name, use_auth_token=self._token)
+                try:
+                    self._pipeline = Pipeline.from_pretrained(self._model_name, use_auth_token=self._token)
+                except Exception as exc:  # pragma: no cover - depends on optional dependency behavior
+                    raise _normalize_diarization_error(exc, model_name=self._model_name) from exc
+            except Exception as exc:  # pragma: no cover - depends on optional dependency behavior
+                raise _normalize_diarization_error(exc, model_name=self._model_name) from exc
 
         kwargs = {}
         if num_speakers_override is not None:
@@ -85,7 +94,10 @@ class PyannoteDiarizationProvider(DiarizationProvider):
             if self._max_speakers is not None:
                 kwargs["max_speakers"] = self._max_speakers
 
-        diarization = self._pipeline(source_uri, **kwargs)
+        try:
+            diarization = self._pipeline(source_uri, **kwargs)
+        except Exception as exc:  # pragma: no cover - depends on optional dependency behavior
+            raise _normalize_diarization_error(exc, model_name=self._model_name) from exc
         turns: list[SpeakerTurn] = []
         for segment, _, speaker in _iter_diarization_tracks(diarization):
             turns.append(
@@ -153,3 +165,30 @@ def _iter_diarization_tracks(diarization):
         f"unsupported diarization output type: {type(diarization).__name__}. "
         "Expected an object exposing itertracks() or a wrapped annotation."
     )
+
+
+def _normalize_diarization_error(exc: Exception, *, model_name: str) -> Exception:
+    message = str(exc)
+    lowered = message.lower()
+    access_error_markers = (
+        "401",
+        "403",
+        "gated repo",
+        "restricted",
+        "access to model",
+        "cannot access gated repo",
+        "must have access",
+        "please log in",
+        "use_auth_token",
+        "token",
+        "authentication",
+        "authorized",
+        "unauthorized",
+        "forbidden",
+    )
+    if any(marker in lowered for marker in access_error_markers):
+        return DiarizationUnavailableError(
+            f"Diarization model `{model_name}` is unavailable. "
+            "Confirm that the Hugging Face token is set and that the account has accepted access to the gated model."
+        )
+    return exc

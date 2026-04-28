@@ -9,7 +9,7 @@ from asr_viz.models.job import ProcessingJob
 from asr_viz.models.transcript import SentenceUnit, Transcript, TranscriptSegment
 from asr_viz.pipeline.segmentation import segment_transcript
 from asr_viz.providers.analysis_v2 import AnalysisProvider
-from asr_viz.providers.diarization import DiarizationProvider
+from asr_viz.providers.diarization import DiarizationProvider, DiarizationUnavailableError
 from asr_viz.providers.transcription import TranscriptionProvider
 from asr_viz.services.archive_previews import update_transcript_archive_preview
 from asr_viz.services.media import resolve_media_source
@@ -103,17 +103,27 @@ class ProcessingPipeline:
                 language_code=transcript_result.language_code,
             )
             if should_run_diarization:
-                sentences = self._diarization_provider.assign_speakers(
-                    sentences,
-                    source_uri,
-                    num_speakers_override=speaker_count_override,
-                )
-                job.diarization_model_version = self._diarization_provider.model_version
-                job.stage_details = {
-                    **job.stage_details,
-                    "diarization_enabled": True,
-                    "speaker_count": len({sentence.speaker_id for sentence in sentences if sentence.speaker_id}),
-                }
+                try:
+                    sentences = self._diarization_provider.assign_speakers(
+                        sentences,
+                        source_uri,
+                        num_speakers_override=speaker_count_override,
+                    )
+                except DiarizationUnavailableError as exc:
+                    job.stage_details = {
+                        **job.stage_details,
+                        "diarization_enabled": False,
+                        "diarization_failed": True,
+                        "diarization_failure_reason": "provider_unavailable",
+                        "diarization_error": str(exc),
+                    }
+                else:
+                    job.diarization_model_version = self._diarization_provider.model_version
+                    job.stage_details = {
+                        **job.stage_details,
+                        "diarization_enabled": True,
+                        "speaker_count": len({sentence.speaker_id for sentence in sentences if sentence.speaker_id}),
+                    }
             elif job.diarization_enabled and speaker_count_override == 1:
                 sentences = _assign_single_speaker(sentences)
                 job.stage_details = {
@@ -141,6 +151,7 @@ class ProcessingPipeline:
 
             session.flush()
 
+            job.current_stage = JobStage.ANALYSIS.value
             analysis_results = self._analysis_provider.analyze(
                 sentences,
                 transcript_result.full_text,

@@ -10,7 +10,7 @@ from asr_viz.models.analysis import AnalysisResult
 from asr_viz.models.job import ProcessingJob
 from asr_viz.models.transcript import SentenceUnit, Transcript
 from asr_viz.providers.analysis_v2 import HeuristicAnalysisProvider
-from asr_viz.providers.diarization import DiarizationProvider, NoOpDiarizationProvider
+from asr_viz.providers.diarization import DiarizationProvider, DiarizationUnavailableError, NoOpDiarizationProvider
 from asr_viz.providers.transcription import MockTranscriptionProvider
 from asr_viz.services.jobs import create_job
 from asr_viz.services.pipeline import ProcessingPipeline, _speaker_count_override
@@ -31,6 +31,19 @@ class RecordingDiarizationProvider(DiarizationProvider):
     ):
         self.calls.append((source_uri, num_speakers_override))
         return sentences
+
+
+class FailingDiarizationProvider(DiarizationProvider):
+    model_version = "failing-diarizer:v1"
+
+    def assign_speakers(
+        self,
+        sentences,
+        source_uri: str,
+        *,
+        num_speakers_override: int | None = None,
+    ):
+        raise DiarizationUnavailableError("Diarization model is unavailable for this environment.")
 
 
 class PipelineTests(unittest.TestCase):
@@ -186,3 +199,55 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(job.stage_details["diarization_skip_reason"], "single_speaker")
             self.assertEqual(job.stage_details["diarization_enabled"], False)
             self.assertTrue(all(sentence.speaker_id == "SPEAKER_00" for sentence in sentence_units))
+
+    def test_pipeline_completes_when_diarization_provider_is_unavailable(self) -> None:
+        tmp_path = Path(self._testMethodName)
+        tmp_path.mkdir(exist_ok=True)
+        source = tmp_path / "dialogue.txt"
+        source.write_text("Please review the design.\nWe should fix the bug tomorrow.", encoding="utf-8")
+
+        self.addCleanup(lambda: shutil.rmtree(tmp_path, ignore_errors=True))
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        pipeline = ProcessingPipeline(
+            transcription_provider=MockTranscriptionProvider(),
+            analysis_provider=HeuristicAnalysisProvider(),
+            diarization_provider=FailingDiarizationProvider(),
+        )
+
+        with session_factory() as session:
+            create_job(
+                session,
+                source_uri=str(source),
+                source_type="file",
+                diarization_enabled=True,
+                mime_type="text/plain",
+                checksum=None,
+                ingest_metadata={"speaker_mode": "dialogue"},
+            )
+
+        with session_factory() as session:
+            claimed_job = pipeline.claim_next_job(session)
+            self.assertIsNotNone(claimed_job)
+            result_job = pipeline.process_job(session, claimed_job.id)
+            self.assertEqual(result_job.status, "completed")
+            self.assertIsNotNone(result_job.transcript_id)
+            self.assertIsNone(result_job.error_message)
+
+        with session_factory() as session:
+            sentence_units = session.scalars(select(SentenceUnit).order_by(SentenceUnit.utterance_index.asc())).all()
+            analysis_results = session.scalars(select(AnalysisResult)).all()
+            job = session.scalar(select(ProcessingJob))
+
+            self.assertEqual(len(sentence_units), 2)
+            self.assertEqual(len(analysis_results), 2)
+            self.assertIsNotNone(job)
+            self.assertTrue(all(sentence.speaker_id is None for sentence in sentence_units))
+            self.assertIsNone(job.diarization_model_version)
+            self.assertEqual(job.stage_details["requested_num_speakers"], 2)
+            self.assertEqual(job.stage_details["diarization_enabled"], False)
+            self.assertEqual(job.stage_details["diarization_failed"], True)
+            self.assertEqual(job.stage_details["diarization_failure_reason"], "provider_unavailable")
+            self.assertIn("Diarization model is unavailable", job.stage_details["diarization_error"])

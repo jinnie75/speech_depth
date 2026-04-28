@@ -63,6 +63,7 @@ This version assumes:
 ## 4. Hugging Face
 
 - [ ] Create a Hugging Face access token with access to the diarization model you intend to use.
+- [ ] If you use `pyannote/speaker-diarization-3.1`, sign in to Hugging Face with the same account and explicitly accept access to that gated repository before deploying the token.
 - [ ] Save it in Render as `HUGGINGFACE_TOKEN`.
 - [ ] Do not commit the token to GitHub.
 
