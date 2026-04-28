@@ -69,6 +69,7 @@ This version assumes:
 
 - [ ] Create a Render web service for the FastAPI app.
 - [ ] Configure dashboard environment variables only.
+- [ ] Make sure the build installs the app dependencies from `pyproject.toml`, including the Postgres driver.
 - [ ] Set `APP_ENV=production`.
 - [ ] Set `DATABASE_URL`.
 - [ ] Set `AUTO_CREATE_SCHEMA=false`.
@@ -107,6 +108,7 @@ PYTHONPATH=src alembic upgrade head
 - [ ] Create a separate Render background worker service.
 - [ ] Use the same codebase as the API.
 - [ ] Configure the worker with dashboard environment variables only.
+- [ ] Make sure the build installs the app dependencies from `pyproject.toml`, including the Postgres driver.
 - [ ] Copy the same runtime env vars used by the API:
   `APP_ENV`, `DATABASE_URL`, `AUTH_PROVIDER`, `REQUIRE_AUTH`, `ENABLE_MOCK_TRANSCRIPTION`,
   `ASR_MODEL`, `DIARIZATION_MIN_SPEAKERS`, `DIARIZATION_MAX_SPEAKERS`,
