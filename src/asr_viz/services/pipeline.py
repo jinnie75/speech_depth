@@ -110,6 +110,14 @@ class ProcessingPipeline:
                         num_speakers_override=speaker_count_override,
                     )
                 except DiarizationUnavailableError as exc:
+                    print(
+                        "diarization_unavailable "
+                        f"job_id={job.id} "
+                        f"model={self._diarization_provider.model_version} "
+                        f"source_uri={source_uri} "
+                        f"reason={str(exc)!r}",
+                        flush=True,
+                    )
                     job.stage_details = {
                         **job.stage_details,
                         "diarization_enabled": False,

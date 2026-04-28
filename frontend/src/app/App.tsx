@@ -2807,8 +2807,7 @@ export function App() {
 
           {processedTranscriptOptions.length === 0 && isArchivePageLoading ? (
             <article className="surface-card archive-empty-state">
-              <h2>Loading archived conversations...</h2>
-              <p className="surface-note">Pulling in the first page of saved transcripts.</p>
+              <h2>Loading the archive...</h2>
             </article>
           ) : processedTranscriptOptions.length === 0 ? (
             <article className="surface-card archive-empty-state">
@@ -3524,7 +3523,6 @@ export function App() {
           <section className="terrain-grid">
             <div className="empty-state">
               <p>Loading conversation...</p>
-              <p>Fetching the transcript and media for this archive.</p>
             </div>
           </section>
         </>

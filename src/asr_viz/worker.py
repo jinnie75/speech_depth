@@ -40,7 +40,8 @@ def _log_worker_startup_configuration() -> None:
         f"diarization_provider={diarization_provider_name} "
         f"diarization_model={settings.diarization_model} "
         f"huggingface_token={_mask_token(settings.huggingface_token)} "
-        f"hf_token_env={_mask_token(os.getenv('HF_TOKEN'))}"
+        f"hf_token_env={_mask_token(os.getenv('HF_TOKEN'))}",
+        flush=True,
     )
 
 
