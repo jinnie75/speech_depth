@@ -42,6 +42,9 @@ class Settings:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./asr_viz.db")
     huggingface_token: str | None = os.getenv("HUGGINGFACE_TOKEN")
     asr_model: str = os.getenv("ASR_MODEL", "small")
+    asr_device: str = os.getenv("ASR_DEVICE", "cpu")
+    asr_compute_type: str = os.getenv("ASR_COMPUTE_TYPE", "int8")
+    asr_cpu_threads: int | None = _get_optional_int("ASR_CPU_THREADS")
     diarization_model: str = os.getenv("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
     diarization_num_speakers: int | None = (
         int(os.getenv("DIARIZATION_NUM_SPEAKERS"))

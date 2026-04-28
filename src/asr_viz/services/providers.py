@@ -11,7 +11,12 @@ from asr_viz.providers.transcription import (
 def build_transcription_provider() -> TranscriptionProvider:
     if settings.enable_mock_transcription:
         return MockTranscriptionProvider()
-    return FasterWhisperTranscriptionProvider(settings.asr_model)
+    return FasterWhisperTranscriptionProvider(
+        settings.asr_model,
+        device=settings.asr_device,
+        compute_type=settings.asr_compute_type,
+        cpu_threads=settings.asr_cpu_threads,
+    )
 
 
 def build_diarization_provider() -> DiarizationProvider:

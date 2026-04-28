@@ -14,12 +14,15 @@ from asr_viz.services.providers import (
 )
 
 
-def process_next_job() -> bool:
-    pipeline = ProcessingPipeline(
+def build_processing_pipeline() -> ProcessingPipeline:
+    return ProcessingPipeline(
         transcription_provider=build_transcription_provider(),
         analysis_provider=build_analysis_provider(),
         diarization_provider=build_diarization_provider(),
     )
+
+
+def process_next_job(pipeline: ProcessingPipeline) -> bool:
     with SessionLocal() as session:
         job = pipeline.claim_next_job(session)
         if job is None:
@@ -30,8 +33,9 @@ def process_next_job() -> bool:
 
 def run_worker(*, once: bool = False) -> None:
     init_db()
+    pipeline = build_processing_pipeline()
     while True:
-        processed = process_next_job()
+        processed = process_next_job(pipeline)
         if once:
             return
         if not processed:

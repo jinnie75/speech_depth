@@ -22,21 +22,45 @@ class TranscriptionProvider(ABC):
 
 
 class FasterWhisperTranscriptionProvider(TranscriptionProvider):
-    def __init__(self, model_size: str) -> None:
-        self.model_version = f"faster-whisper:{model_size}"
+    def __init__(
+        self,
+        model_size: str,
+        *,
+        device: str = "cpu",
+        compute_type: str = "int8",
+        cpu_threads: int | None = None,
+    ) -> None:
+        self.model_version = f"faster-whisper:{model_size}:{device}:{compute_type}"
         self._model_size = model_size
+        self._device = device
+        self._compute_type = compute_type
+        self._cpu_threads = cpu_threads
+        self._model = None
+
+    def _get_model(self):
+        if self._model is not None:
+            return self._model
+
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise RuntimeError("faster-whisper is not installed") from exc
+
+        init_kwargs: dict[str, str | int] = {
+            "device": self._device,
+            "compute_type": self._compute_type,
+        }
+        if self._cpu_threads is not None:
+            init_kwargs["cpu_threads"] = self._cpu_threads
+        self._model = WhisperModel(self._model_size, **init_kwargs)
+        return self._model
 
     def transcribe(
         self,
         source_uri: str,
         preferred_language: PreferredLanguage | None = None,
     ) -> TranscriptResult:
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise RuntimeError("faster-whisper is not installed") from exc
-
-        model = WhisperModel(self._model_size)
+        model = self._get_model()
         transcribe_kwargs = {"word_timestamps": True}
         if preferred_language and preferred_language != "auto":
             transcribe_kwargs["language"] = preferred_language
