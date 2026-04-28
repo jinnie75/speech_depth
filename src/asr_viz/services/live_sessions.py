@@ -12,7 +12,11 @@ from asr_viz.models.live import LiveSession, LiveTranscriptEvent
 from asr_viz.models.media import MediaAsset
 from asr_viz.models.transcript import SentenceUnit, Transcript
 from asr_viz.services.archive_previews import update_transcript_archive_preview
-from asr_viz.services.media import checksum_for_local_file
+from asr_viz.services.media import (
+    checksum_for_local_file,
+    remove_local_media_file,
+    upload_local_file_to_configured_storage,
+)
 
 _MIME_EXTENSIONS = {
     "audio/mpeg": ".mp3",
@@ -218,8 +222,19 @@ def finalize_live_session(session: Session, live_session: LiveSession) -> LiveSe
     if not media_path.exists():
         raise FileNotFoundError(f"live media not found: {live_session.storage_path}")
 
+    checksum = checksum_for_local_file(str(media_path))
+    source_type, source_uri = upload_local_file_to_configured_storage(
+        local_path=str(media_path),
+        owner_user_id=live_session.owner_user_id,
+        media_category="live_sessions",
+        media_id=live_session.id,
+        original_filename=live_session.original_filename,
+        mime_type=live_session.mime_type,
+    )
     if live_session.media_asset is not None:
-        live_session.media_asset.checksum = checksum_for_local_file(str(media_path))
+        live_session.media_asset.source_type = source_type
+        live_session.media_asset.source_uri = source_uri
+        live_session.media_asset.checksum = checksum
         live_session.media_asset.size_bytes = live_session.total_bytes
         live_session.media_asset.ingest_metadata = {
             **(live_session.media_asset.ingest_metadata or {}),
@@ -240,6 +255,8 @@ def finalize_live_session(session: Session, live_session: LiveSession) -> LiveSe
 
     session.commit()
     session.refresh(live_session)
+    if source_type == "r2":
+        remove_local_media_file(str(media_path))
     return live_session
 
 

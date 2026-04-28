@@ -119,6 +119,58 @@ class StreamingIngestionTests(unittest.TestCase):
         self.assertEqual(completed_payload["processing_job_status"], "completed")
         self.assertIsNotNone(completed_payload["transcript_id"])
 
+    def test_finalize_promotes_stream_media_to_r2_backed_job_source(self) -> None:
+        client = TestClient(api_main.app)
+        original_uploader = streaming_module.upload_local_file_to_configured_storage
+
+        def fake_upload_local_file_to_configured_storage(**kwargs):
+            return "r2", "r2://test-bucket/stream_ingestion/test-user/uploaded.wav"
+
+        streaming_module.upload_local_file_to_configured_storage = fake_upload_local_file_to_configured_storage
+        try:
+            create_response = client.post(
+                "/stream-sessions",
+                json={
+                    "mime_type": "audio/wav",
+                    "original_filename": "uploaded.wav",
+                    "diarization_enabled": False,
+                    "preferred_language": "en",
+                    "ingest_metadata": {},
+                },
+                headers={"x-asr-viz-user-id": "test-user"},
+            )
+            self.assertEqual(create_response.status_code, 201)
+            session_payload = create_response.json()
+            session_id = session_payload["id"]
+            storage_path = Path(session_payload["storage_path"])
+
+            upload_response = client.put(
+                f"/stream-sessions/{session_id}/chunks",
+                content=b"fake wav bytes",
+                headers={
+                    "content-type": "application/octet-stream",
+                    "x-asr-viz-user-id": "test-user",
+                },
+            )
+            self.assertEqual(upload_response.status_code, 202)
+            self.assertTrue(storage_path.exists())
+
+            finalize_response = client.post(
+                f"/stream-sessions/{session_id}/finalize",
+                headers={"x-asr-viz-user-id": "test-user"},
+            )
+            self.assertEqual(finalize_response.status_code, 200)
+            self.assertEqual(finalize_response.json()["status"], "queued")
+            self.assertFalse(storage_path.exists())
+
+            with self.session_factory() as session:
+                job = session.query(ProcessingJob).order_by(ProcessingJob.created_at.desc()).first()
+                self.assertIsNotNone(job)
+                self.assertEqual(job.media_asset.source_type, "r2")
+                self.assertEqual(job.media_asset.source_uri, "r2://test-bucket/stream_ingestion/test-user/uploaded.wav")
+        finally:
+            streaming_module.upload_local_file_to_configured_storage = original_uploader
+
     def test_anonymous_session_cookie_persists_across_requests_and_isolates_other_clients(self) -> None:
         first_client = TestClient(api_main.app)
 

@@ -8,7 +8,11 @@ from asr_viz.core.settings import settings
 from asr_viz.models.common import JobStatus
 from asr_viz.models.stream import StreamIngestionSession
 from asr_viz.services.jobs import create_job
-from asr_viz.services.media import checksum_for_local_file
+from asr_viz.services.media import (
+    checksum_for_local_file,
+    remove_local_media_file,
+    upload_local_file_to_configured_storage,
+)
 
 
 _MIME_EXTENSIONS = {
@@ -90,14 +94,23 @@ def finalize_stream_session(session: Session, stream_session: StreamIngestionSes
     if not media_path.exists():
         raise FileNotFoundError(f"stream media not found: {stream_session.storage_path}")
 
+    checksum = checksum_for_local_file(str(media_path))
+    source_type, source_uri = upload_local_file_to_configured_storage(
+        local_path=str(media_path),
+        owner_user_id=stream_session.owner_user_id,
+        media_category="stream_ingestion",
+        media_id=stream_session.id,
+        original_filename=stream_session.original_filename,
+        mime_type=stream_session.mime_type,
+    )
     job = create_job(
         session,
         owner_user_id=stream_session.owner_user_id,
-        source_uri=str(media_path),
-        source_type="file",
+        source_uri=source_uri,
+        source_type=source_type,
         diarization_enabled=stream_session.diarization_enabled,
         mime_type=stream_session.mime_type,
-        checksum=checksum_for_local_file(str(media_path)),
+        checksum=checksum,
         ingest_metadata={
             **stream_session.ingest_metadata,
             "stream_ingestion_session_id": stream_session.id,
@@ -112,6 +125,8 @@ def finalize_stream_session(session: Session, stream_session: StreamIngestionSes
     stream_session.error_message = None
     session.commit()
     session.refresh(stream_session)
+    if source_type == "r2":
+        remove_local_media_file(str(media_path))
     return stream_session
 
 

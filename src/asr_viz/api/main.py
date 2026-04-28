@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -33,6 +31,7 @@ from asr_viz.models.transcript import SentenceUnit, Transcript
 from asr_viz.services.bootstrap import init_db
 from asr_viz.services.jobs import create_job, infer_source_type
 from asr_viz.services.archive_previews import update_transcript_archive_preview
+from asr_viz.services.media import build_media_response
 from asr_viz.services.live_sessions import (
     append_live_chunk,
     append_live_event,
@@ -458,20 +457,10 @@ def get_job_media(
     job = _get_owned_job(session, job_id, current_user.user_id)
     if job.media_asset is None:
         raise HTTPException(status_code=404, detail="job not found")
-
-    source_uri = job.media_asset.source_uri
-    if source_uri.startswith(("http://", "https://")):
-        return RedirectResponse(url=source_uri)
-
-    media_path = Path(source_uri)
-    if not media_path.exists() or not media_path.is_file():
-        raise HTTPException(status_code=404, detail="media file not found")
-
-    return FileResponse(
-        path=media_path,
-        media_type=job.media_asset.mime_type,
-        filename=job.media_display_name or media_path.name,
-    )
+    try:
+        return build_media_response(job.media_asset, filename=job.media_display_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/transcripts/{transcript_id}", response_model=TranscriptResponse)
