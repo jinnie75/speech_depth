@@ -43,7 +43,7 @@ const DEFAULT_MEDIA_SRC = import.meta.env.VITE_MEDIA_SRC ?? "";
 const POLL_INTERVAL_MS = 2000;
 const TRANSCRIPT_RETRY_LIMIT = 8;
 const FALLBACK_SPEAKER_ID = "UNKNOWN_SPEAKER";
-const FALLBACK_SPEAKER_LABEL = "Speaker";
+const FALLBACK_SPEAKER_LABEL = "Speaker 1";
 const MANUAL_SPEAKER_PREFIX = "MANUAL_SPEAKER_";
 const PRELOAD_TRANSCRIPT_ID = DEFAULT_MEDIA_SRC ? TRANSCRIPT_ID : undefined;
 const DEFAULT_SPEAKER_COUNT = 2;
@@ -1333,19 +1333,20 @@ function collectSpeakerIdsFromDocument(document: PlaybackDocument): string[] {
 }
 
 function buildReviewDraft(document: PlaybackDocument): ReviewDraft {
-  const speakerIds = collectSpeakerIdsFromDocument(document);
+  const detectedSpeakerIds = collectSpeakerIdsFromDocument(document);
+  const speakerIds = detectedSpeakerIds.length > 0 ? detectedSpeakerIds : ["SPEAKER_00"];
   const sentences: Record<string, ReviewSentenceDraft> = {};
   for (const sentence of document.sentenceUnits) {
     sentences[sentence.id] = {
       sentenceId: sentence.id,
       text: sentence.display_text,
-      speakerId: sentence.display_speaker_id,
+      speakerId: sentence.display_speaker_id ?? speakerIds[0] ?? null,
     };
   }
 
   return {
     conversationTitle: document.conversationTitle ?? "",
-    speakerIds: speakerIds.length > 0 ? speakerIds : [`${MANUAL_SPEAKER_PREFIX}00`],
+    speakerIds,
     speakerLabels: { ...document.speakerLabels },
     sentences,
   };
@@ -2626,6 +2627,42 @@ export function App() {
     setSaveState("idle");
   };
 
+  const removeDraftSpeaker = (speakerId: string) => {
+    setReviewDraft((currentDraft) => {
+      if (!currentDraft) {
+        return currentDraft;
+      }
+
+      const speakerIndex = currentDraft.speakerIds.indexOf(speakerId);
+      if (speakerIndex <= 0) {
+        return currentDraft;
+      }
+
+      const fallbackSpeakerId = currentDraft.speakerIds[0] ?? null;
+      const nextSpeakerIds = currentDraft.speakerIds.filter((currentSpeakerId) => currentSpeakerId !== speakerId);
+      const nextSpeakerLabels = { ...currentDraft.speakerLabels };
+      delete nextSpeakerLabels[speakerId];
+
+      const nextSentences: Record<string, ReviewSentenceDraft> = {};
+      for (const [sentenceId, sentence] of Object.entries(currentDraft.sentences)) {
+        nextSentences[sentenceId] = sentence.speakerId === speakerId
+          ? {
+            ...sentence,
+            speakerId: fallbackSpeakerId,
+          }
+          : sentence;
+      }
+
+      return {
+        ...currentDraft,
+        speakerIds: nextSpeakerIds,
+        speakerLabels: nextSpeakerLabels,
+        sentences: nextSentences,
+      };
+    });
+    setSaveState("idle");
+  };
+
   const updateDraftSentence = (sentenceId: string, updates: Partial<ReviewSentenceDraft>) => {
     setReviewDraft((currentDraft) => {
       if (!currentDraft) {
@@ -2991,11 +3028,6 @@ export function App() {
                 </button>
               </div>
             </div>
-            <div className="create-shell__intro">
-              <p className="surface-note">
-                Choose how you want to begin the next conversation.
-              </p>
-            </div>
           </header>
 
           <section className="onboarding-stack">
@@ -3010,9 +3042,6 @@ export function App() {
                   <div className="upload-processing__bar" aria-hidden="true" />
                   <p className="upload-processing__copy">
                     {describeProcessingProgress(streamSession, uploadProgress) ?? "Your transcript is processing."}
-                  </p>
-                  <p className="surface-note upload-processing__note">
-                    Other actions are paused until this upload finishes.
                   </p>
                 </div>
               ) : !pendingFile ? (
@@ -3137,7 +3166,7 @@ export function App() {
             </p>
             <p>
               Each speaker is represented by different colored terrains that grows as the conversation progresses,
-              the area proportional to how much they’ve spoken. Each time there is an expression of uncertainty or a hedge, a level of elevation is added to the topographic map.
+              the area proportional to how much they’ve spoken. Every time there is an expression of uncertainty or a hedge, a level of elevation is added to the topographic map.
               Expressions of emotions, vulnerability and reflections on life are drawn directly into part of the map.
             </p>
             <figure className="about-shell__demo">
@@ -3160,11 +3189,11 @@ export function App() {
               All uploaded audio and generated images are saved to a storage system private to you.
             </p>
             <p>
-              I am bilingual in Korean and English but have spent most of my life in Korea.
-              Navigating male-dominant workplaces and a new life in America has been confusing,
-              expected to express myself in a way contradictory from how I’ve been raised to behave — be modest, don't ask questions, it's just the way it is.
-              I’m trying to change, but it’s hard to steer far from where you’re anchored.
-              This project is an attempt to bring this difference to attention: a reminder that we have different patterns of expression, and to have patience towards one another.
+              I grew up in Korea, where modesty is a virtue and asking too many questions can be frowned upon.
+              This shaped the way I speak, and how I hold back.
+              Coming to a culture where the opposite is rewarded — directness, visibility, speaking up — has been confusing.
+              I try to change, but old habits die hard.
+              This project is an attempt to bring this difference to attention: a reminder that we all have different patterns of expression, and to have patience toward ourselves and each other.
             </p>
             <p>
               The system takes a dictionary-based approach to analysis.
@@ -3387,23 +3416,34 @@ export function App() {
                 </div>
               </div>
 
-              {speakerIds.length === 0 ? (
+              {/* {speakerIds.length === 0 && reviewSpeakerIds.length === 0 ? (
                 <div className="empty-state">
                   <p>No speaker diarization labels were detected for this transcript.</p>
                   <p>Add speakers manually, then assign each transcript line below.</p>
                 </div>
-              ) : null}
+              ) : null} */}
 
               <div className="speaker-name-grid">
                 {reviewSpeakerIds.map((speakerId, index) => (
-                  <label key={speakerId} className="speaker-name-card">
-                    <span>{formatSpeakerLabel(speakerId, index, reviewDraft.speakerLabels)}</span>
+                  <div key={speakerId} className="speaker-name-card">
+                    <div className="speaker-name-card__header">
+                      <span>{formatSpeakerLabel(speakerId, index, reviewDraft.speakerLabels)}</span>
+                      {index > 0 ? (
+                        <button
+                          type="button"
+                          className="ghost-button speaker-name-card__remove"
+                          onClick={() => removeDraftSpeaker(speakerId)}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
                     <input
                       value={reviewDraft.speakerLabels[speakerId] ?? ""}
                       onChange={(event) => updateDraftSpeakerLabel(speakerId, event.target.value)}
                       placeholder={`Name ${formatSpeakerLabel(speakerId, index, reviewDraft.speakerLabels)}`}
                     />
-                  </label>
+                  </div>
                 ))}
                 <button type="button" className="ghost-button" onClick={addDraftSpeaker}>
                   Add Speaker

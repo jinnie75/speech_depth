@@ -117,13 +117,14 @@ class PipelineTests(unittest.TestCase):
             self.assertIsNotNone(job)
             self.assertEqual(len(sentence_units), 2)
             self.assertEqual(len(analysis_results), 2)
-            self.assertIsNone(sentence_units[0].speaker_id)
+            self.assertTrue(all(sentence.speaker_id == "SPEAKER_00" for sentence in sentence_units))
             self.assertGreaterEqual(analysis_results[0].politeness_score, 0.0)
             self.assertLessEqual(analysis_results[0].semantic_confidence_score, 1.0)
             self.assertIn("hedging", analysis_results[0].analysis_payload)
             self.assertIn("substance", analysis_results[0].analysis_payload)
             self.assertIn("sentence_count", job.stage_details)
             self.assertEqual(job.asr_model_version, "mock-transcriber:v1")
+            self.assertEqual(job.stage_details["diarization_skip_reason"], "disabled")
 
     def test_pipeline_uses_preferred_language_for_korean_jobs(self) -> None:
         tmp_path = Path(self._testMethodName)
@@ -258,7 +259,7 @@ class PipelineTests(unittest.TestCase):
             job = session.scalar(select(ProcessingJob))
 
             self.assertIsNotNone(job)
-            self.assertTrue(all(sentence.speaker_id is None for sentence in sentence_units))
+            self.assertTrue(all(sentence.speaker_id == "SPEAKER_00" for sentence in sentence_units))
             self.assertIsNone(job.diarization_model_version)
             self.assertEqual(job.stage_details["requested_num_speakers"], 2)
             self.assertEqual(job.stage_details["diarization_enabled"], False)
@@ -309,7 +310,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(len(sentence_units), 2)
             self.assertEqual(len(analysis_results), 2)
             self.assertIsNotNone(job)
-            self.assertTrue(all(sentence.speaker_id is None for sentence in sentence_units))
+            self.assertTrue(all(sentence.speaker_id == "SPEAKER_00" for sentence in sentence_units))
             self.assertIsNone(job.diarization_model_version)
             self.assertEqual(job.stage_details["requested_num_speakers"], 2)
             self.assertEqual(job.stage_details["diarization_enabled"], False)

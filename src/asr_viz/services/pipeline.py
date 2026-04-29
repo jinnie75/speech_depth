@@ -107,7 +107,15 @@ class ProcessingPipeline:
                 language_code=transcript_result.language_code,
             )
             self._transcription_provider.release_resources()
-            if should_run_diarization:
+            if not job.diarization_enabled:
+                sentences = _assign_single_speaker(sentences)
+                job.stage_details = {
+                    **job.stage_details,
+                    "diarization_enabled": False,
+                    "diarization_skipped": True,
+                    "diarization_skip_reason": "disabled",
+                }
+            elif should_run_diarization:
                 try:
                     sentences = self._diarization_provider.assign_speakers(
                         sentences,
@@ -129,6 +137,7 @@ class ProcessingPipeline:
                         f"original_error_message={original_error_message!r}",
                         flush=True,
                     )
+                    sentences = _assign_single_speaker(sentences)
                     job.stage_details = {
                         **job.stage_details,
                         "diarization_enabled": False,
@@ -156,6 +165,7 @@ class ProcessingPipeline:
                     "diarization_skip_reason": "single_speaker",
                 }
             elif job.diarization_enabled and not diarization_available:
+                sentences = _assign_single_speaker(sentences)
                 job.stage_details = {
                     **job.stage_details,
                     "diarization_enabled": False,
