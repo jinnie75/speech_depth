@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import gc
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +20,9 @@ class TranscriptionProvider(ABC):
         preferred_language: PreferredLanguage | None = None,
     ) -> TranscriptResult:
         raise NotImplementedError
+
+    def release_resources(self) -> None:
+        """Allow implementations to drop heavyweight state between jobs."""
 
 
 class FasterWhisperTranscriptionProvider(TranscriptionProvider):
@@ -100,6 +104,10 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
             segments=parsed_segments,
             metadata={"duration": getattr(info, "duration", None)},
         )
+
+    def release_resources(self) -> None:
+        self._model = None
+        gc.collect()
 
 
 class MockTranscriptionProvider(TranscriptionProvider):

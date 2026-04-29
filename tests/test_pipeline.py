@@ -21,6 +21,7 @@ class RecordingDiarizationProvider(DiarizationProvider):
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, int | None]] = []
+        self.release_calls = 0
 
     def assign_speakers(
         self,
@@ -32,9 +33,15 @@ class RecordingDiarizationProvider(DiarizationProvider):
         self.calls.append((source_uri, num_speakers_override))
         return sentences
 
+    def release_resources(self) -> None:
+        self.release_calls += 1
+
 
 class FailingDiarizationProvider(DiarizationProvider):
     model_version = "failing-diarizer:v1"
+
+    def __init__(self) -> None:
+        self.release_calls = 0
 
     def assign_speakers(
         self,
@@ -44,6 +51,18 @@ class FailingDiarizationProvider(DiarizationProvider):
         num_speakers_override: int | None = None,
     ):
         raise DiarizationUnavailableError("Diarization model is unavailable for this environment.")
+
+    def release_resources(self) -> None:
+        self.release_calls += 1
+
+
+class RecordingTranscriptionProvider(MockTranscriptionProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release_calls = 0
+
+    def release_resources(self) -> None:
+        self.release_calls += 1
 
 
 class PipelineTests(unittest.TestCase):
@@ -251,3 +270,42 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(job.stage_details["diarization_failed"], True)
             self.assertEqual(job.stage_details["diarization_failure_reason"], "provider_unavailable")
             self.assertIn("Diarization model is unavailable", job.stage_details["diarization_error"])
+
+    def test_pipeline_releases_heavy_provider_resources_between_stages(self) -> None:
+        tmp_path = Path(self._testMethodName)
+        tmp_path.mkdir(exist_ok=True)
+        source = tmp_path / "dialogue.txt"
+        source.write_text("Please review the design.\nWe should fix the bug tomorrow.", encoding="utf-8")
+
+        self.addCleanup(lambda: shutil.rmtree(tmp_path, ignore_errors=True))
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        transcription_provider = RecordingTranscriptionProvider()
+        diarization_provider = RecordingDiarizationProvider()
+        pipeline = ProcessingPipeline(
+            transcription_provider=transcription_provider,
+            analysis_provider=HeuristicAnalysisProvider(),
+            diarization_provider=diarization_provider,
+        )
+
+        with session_factory() as session:
+            create_job(
+                session,
+                source_uri=str(source),
+                source_type="file",
+                diarization_enabled=True,
+                mime_type="text/plain",
+                checksum=None,
+                ingest_metadata={"speaker_mode": "dialogue"},
+            )
+
+        with session_factory() as session:
+            claimed_job = pipeline.claim_next_job(session)
+            self.assertIsNotNone(claimed_job)
+            result_job = pipeline.process_job(session, claimed_job.id)
+            self.assertEqual(result_job.status, "completed")
+
+        self.assertEqual(transcription_provider.release_calls, 1)
+        self.assertEqual(diarization_provider.release_calls, 1)

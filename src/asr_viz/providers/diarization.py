@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC
+import gc
 from dataclasses import dataclass
 
 from asr_viz.pipeline.types import SentenceCandidate
@@ -17,6 +18,9 @@ class DiarizationProvider(ABC):
         num_speakers_override: int | None = None,
     ) -> list[SentenceCandidate]:
         return sentences
+
+    def release_resources(self) -> None:
+        """Allow implementations to drop heavyweight state between jobs."""
 
 
 class NoOpDiarizationProvider(DiarizationProvider):
@@ -115,6 +119,10 @@ class PyannoteDiarizationProvider(DiarizationProvider):
                 )
             )
         return turns
+
+    def release_resources(self) -> None:
+        self._pipeline = None
+        gc.collect()
 
 
 def assign_speakers_by_overlap(

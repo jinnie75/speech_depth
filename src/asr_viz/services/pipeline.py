@@ -105,6 +105,7 @@ class ProcessingPipeline:
                 transcript_result.segments,
                 language_code=transcript_result.language_code,
             )
+            self._transcription_provider.release_resources()
             if should_run_diarization:
                 try:
                     sentences = self._diarization_provider.assign_speakers(
@@ -143,6 +144,8 @@ class ProcessingPipeline:
                         "diarization_enabled": True,
                         "speaker_count": len({sentence.speaker_id for sentence in sentences if sentence.speaker_id}),
                     }
+                finally:
+                    self._diarization_provider.release_resources()
             elif job.diarization_enabled and speaker_count_override == 1:
                 sentences = _assign_single_speaker(sentences)
                 job.stage_details = {

@@ -11,8 +11,9 @@ class FasterWhisperTranscriptionProviderTests(unittest.TestCase):
         recorded_calls: list[dict] = []
 
         class FakeWhisperModel:
-            def __init__(self, model_size: str) -> None:
+            def __init__(self, model_size: str, **kwargs) -> None:
                 self.model_size = model_size
+                self.init_kwargs = kwargs
 
             def transcribe(self, source_uri: str, **kwargs):
                 recorded_calls.append({"source_uri": source_uri, **kwargs})
@@ -32,8 +33,9 @@ class FasterWhisperTranscriptionProviderTests(unittest.TestCase):
         recorded_calls: list[dict] = []
 
         class FakeWhisperModel:
-            def __init__(self, model_size: str) -> None:
+            def __init__(self, model_size: str, **kwargs) -> None:
                 self.model_size = model_size
+                self.init_kwargs = kwargs
 
             def transcribe(self, source_uri: str, **kwargs):
                 recorded_calls.append({"source_uri": source_uri, **kwargs})

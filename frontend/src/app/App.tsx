@@ -2053,19 +2053,28 @@ export function App() {
     setMode(nextMode);
   };
 
-  const handleDismissError = () => {
-    const shouldReturnToArchives = shouldReturnToArchivesOnErrorDismiss(error);
-    setError(null);
-    if (shouldReturnToArchives) {
-      pollingSessionIdRef.current = null;
-      liveStopRequestedRef.current = true;
-      liveRecognitionRestartEnabledRef.current = false;
-      liveRecognitionRef.current?.stop();
-      liveRecognitionRef.current = null;
-      liveMediaRecorderRef.current?.stop();
-      liveMediaRecorderRef.current = null;
-      liveMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-      liveMediaStreamRef.current = null;
+  const resetToArchiveView = () => {
+    transcriptSelectionRequestRef.current += 1;
+    pollingSessionIdRef.current = null;
+    liveStopRequestedRef.current = true;
+    liveRecognitionRestartEnabledRef.current = false;
+    liveRecognitionRef.current?.stop();
+    liveRecognitionRef.current = null;
+    liveMediaRecorderRef.current?.stop();
+    liveMediaRecorderRef.current = null;
+    liveMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveMediaStreamRef.current = null;
+
+    if (mediaObjectUrlRef.current) {
+      URL.revokeObjectURL(mediaObjectUrlRef.current);
+      mediaObjectUrlRef.current = null;
+    }
+
+    startTransition(() => {
+      setMode("select");
+      setDocument(null);
+      setReviewDraft(null);
+      setTranscriptLoadStatus("idle");
       setStreamSession(null);
       setLiveSession(null);
       setLiveCaptureState("idle");
@@ -2076,9 +2085,28 @@ export function App() {
       setPendingFile(null);
       setUploadProgress(null);
       setIsUploading(false);
-      setTranscriptLoadStatus("idle");
-      setMode("select");
+      setSelectedProcessedTranscriptId("");
+      setMediaSrc(DEFAULT_MEDIA_SRC);
+      setMediaName(DEFAULT_MEDIA_SRC ? "Configured media source" : "No file selected");
+      setPlaybackStarted(false);
+      setCurrentTimeMs(0);
+      setMediaDurationMs(0);
+      setIsMediaPlaying(false);
+      setIsMediaMuted(false);
+      setIsPlaybackComplete(false);
+      setSaveState("idle");
+      setError(null);
+    });
+  };
+
+  const handleDismissError = () => {
+    const shouldReturnToArchives = shouldReturnToArchivesOnErrorDismiss(error);
+    if (shouldReturnToArchives) {
+      resetToArchiveView();
+      return;
     }
+
+    setError(null);
   };
 
   const persistLiveEvent = async (
