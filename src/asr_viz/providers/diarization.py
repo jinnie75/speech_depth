@@ -26,6 +26,11 @@ class NoOpDiarizationProvider(DiarizationProvider):
 class DiarizationUnavailableError(RuntimeError):
     """Raised when diarization cannot run because the provider is unavailable."""
 
+    def __init__(self, message: str, *, original_exception: Exception | None = None) -> None:
+        super().__init__(message)
+        self.original_exception_type = type(original_exception).__name__ if original_exception is not None else None
+        self.original_exception_message = str(original_exception) if original_exception is not None else None
+
 
 @dataclass(frozen=True)
 class SpeakerTurn:
@@ -189,6 +194,7 @@ def _normalize_diarization_error(exc: Exception, *, model_name: str) -> Exceptio
     if any(marker in lowered for marker in access_error_markers):
         return DiarizationUnavailableError(
             f"Diarization model `{model_name}` is unavailable. "
-            "Confirm that the Hugging Face token is set and that the account has accepted access to the gated model."
+            "Confirm that the Hugging Face token is set and that the account has accepted access to the gated model.",
+            original_exception=exc,
         )
     return exc

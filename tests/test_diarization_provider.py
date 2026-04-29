@@ -1,6 +1,11 @@
 import unittest
 
-from asr_viz.providers.diarization import PyannoteDiarizationProvider, SpeakerTurn
+from asr_viz.providers.diarization import (
+    DiarizationUnavailableError,
+    PyannoteDiarizationProvider,
+    SpeakerTurn,
+    _normalize_diarization_error,
+)
 
 
 class _FakeSegment:
@@ -79,3 +84,12 @@ class PyannoteProviderTests(unittest.TestCase):
 
         self.assertEqual(fake_pipeline.calls, [("/tmp/example.wav", {"min_speakers": 1, "max_speakers": 2})])
         self.assertEqual(turns, [SpeakerTurn(speaker_id="SPEAKER_00", start_ms=0, end_ms=1000)])
+
+    def test_normalized_access_error_preserves_original_exception_details(self) -> None:
+        original = RuntimeError("401 Client Error: Unauthorized for url")
+
+        normalized = _normalize_diarization_error(original, model_name="test-model")
+
+        self.assertIsInstance(normalized, DiarizationUnavailableError)
+        self.assertEqual(normalized.original_exception_type, "RuntimeError")
+        self.assertEqual(normalized.original_exception_message, "401 Client Error: Unauthorized for url")

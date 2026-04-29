@@ -110,12 +110,18 @@ class ProcessingPipeline:
                         num_speakers_override=speaker_count_override,
                     )
                 except DiarizationUnavailableError as exc:
+                    original_error_type = getattr(exc, "original_exception_type", None) or "unknown"
+                    original_error_message = _single_line_error_message(
+                        getattr(exc, "original_exception_message", None)
+                    )
                     print(
                         "diarization_unavailable "
                         f"job_id={job.id} "
                         f"model={self._diarization_provider.model_version} "
                         f"source_uri={source_uri} "
-                        f"reason={str(exc)!r}",
+                        f"reason={str(exc)!r} "
+                        f"original_error_type={original_error_type!r} "
+                        f"original_error_message={original_error_message!r}",
                         flush=True,
                     )
                     job.stage_details = {
@@ -124,6 +130,8 @@ class ProcessingPipeline:
                         "diarization_failed": True,
                         "diarization_failure_reason": "provider_unavailable",
                         "diarization_error": str(exc),
+                        "diarization_original_error_type": original_error_type,
+                        "diarization_original_error_message": original_error_message,
                     }
                 else:
                     job.diarization_model_version = self._diarization_provider.model_version
@@ -239,3 +247,12 @@ def _assign_single_speaker(sentences: list[SentenceCandidate]) -> list[SentenceC
         sentence.model_copy(update={"speaker_id": _SINGLE_SPEAKER_ID})
         for sentence in sentences
     ]
+
+
+def _single_line_error_message(message: str | None) -> str | None:
+    if message is None:
+        return None
+    collapsed = " ".join(part for part in message.splitlines() if part.strip()).strip()
+    if not collapsed:
+        return None
+    return collapsed[:500]
