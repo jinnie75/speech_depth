@@ -6,6 +6,7 @@ from asr_viz.models.transcript import SentenceUnit, Transcript
 
 FALLBACK_SPEAKER_ID = "UNKNOWN_SPEAKER"
 FALLBACK_SPEAKER_LABEL = "Speaker"
+MANUAL_SPEAKER_PREFIX = "MANUAL_SPEAKER_"
 MARGIN_NOTE_SETTLE_DURATION_MS = 3000
 MARGIN_NOTE_DELAY_MS = 120
 
@@ -325,6 +326,8 @@ def _format_speaker_label(speaker_id: str, index: int, speaker_labels: dict[str,
             suffix = None
         if suffix is not None:
             return f"Speaker {suffix + 1}"
+    if speaker_id.startswith(MANUAL_SPEAKER_PREFIX):
+        return f"Speaker {index + 1}" if index >= 0 else speaker_id
     return f"Speaker {index + 1}" if index >= 0 else speaker_id
 
 

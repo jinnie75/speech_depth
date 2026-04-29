@@ -48,7 +48,10 @@ class TranscriptReviewApiTests(unittest.TestCase):
         finally:
             session.close()
 
-    def _seed_transcript(self) -> tuple[str, list[str]]:
+    def _seed_transcript(
+        self,
+        speaker_ids: tuple[str | None, str | None] = ("SPEAKER_00", "SPEAKER_01"),
+    ) -> tuple[str, list[str]]:
         with self.session_factory() as session:
             media_asset = MediaAsset(
                 owner_user_id=self.owner_user_id,
@@ -77,8 +80,8 @@ class TranscriptReviewApiTests(unittest.TestCase):
                 start_ms=0,
                 end_ms=1000,
                 text="Hello there.",
-                speaker_id="SPEAKER_00",
-                speaker_confidence=0.95,
+                speaker_id=speaker_ids[0],
+                speaker_confidence=0.95 if speaker_ids[0] else None,
                 source_segment_ids=[0],
                 sentence_metadata={},
             )
@@ -88,8 +91,8 @@ class TranscriptReviewApiTests(unittest.TestCase):
                 start_ms=1000,
                 end_ms=2200,
                 text="General Kenobi.",
-                speaker_id="SPEAKER_01",
-                speaker_confidence=0.97,
+                speaker_id=speaker_ids[1],
+                speaker_confidence=0.97 if speaker_ids[1] else None,
                 source_segment_ids=[1],
                 sentence_metadata={},
             )
@@ -192,6 +195,50 @@ class TranscriptReviewApiTests(unittest.TestCase):
             transcript = session.get(Transcript, self.transcript_id)
             self.assertIsNotNone(transcript)
             self.assertIn("archive_preview", transcript.transcript_metadata)
+
+    def test_patch_review_allows_manual_speakers_when_diarization_is_missing(self) -> None:
+        transcript_id, sentence_ids = self._seed_transcript(speaker_ids=(None, None))
+        client = TestClient(api_main.app)
+
+        response = client.patch(
+            f"/transcripts/{transcript_id}/review",
+            headers=self._auth_headers(),
+            json={
+                "conversation_title": "Manual Speaker Recovery",
+                "speaker_labels": {
+                    "MANUAL_SPEAKER_00": "Host",
+                    "MANUAL_SPEAKER_01": "Guest",
+                },
+                "review_status": "in_progress",
+                "sentence_overrides": [
+                    {
+                        "sentence_unit_id": sentence_ids[0],
+                        "manual_text": None,
+                        "manual_speaker_id": "MANUAL_SPEAKER_00",
+                    },
+                    {
+                        "sentence_unit_id": sentence_ids[1],
+                        "manual_text": None,
+                        "manual_speaker_id": "MANUAL_SPEAKER_01",
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["speaker_labels"]["MANUAL_SPEAKER_00"], "Host")
+        self.assertEqual(payload["sentence_units"][0]["display_speaker_id"], "MANUAL_SPEAKER_00")
+        self.assertEqual(payload["sentence_units"][1]["display_speaker_id"], "MANUAL_SPEAKER_01")
+        self.assertEqual(payload["sentence_units"][0]["manual_speaker_id"], "MANUAL_SPEAKER_00")
+        self.assertEqual(payload["sentence_units"][1]["manual_speaker_id"], "MANUAL_SPEAKER_01")
+
+        jobs_response = client.get("/jobs", headers=self._auth_headers())
+        self.assertEqual(jobs_response.status_code, 200)
+        jobs_payload = jobs_response.json()
+        matching_job = next(job for job in jobs_payload["jobs"] if job["transcript_id"] == transcript_id)
+        self.assertIsNotNone(matching_job["archive_preview"])
+        self.assertEqual(matching_job["archive_preview"]["speakers"][0]["label"], "Host")
 
     def test_jobs_completed_only_supports_limit_offset_and_total(self) -> None:
         self._seed_transcript()

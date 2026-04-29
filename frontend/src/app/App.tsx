@@ -44,6 +44,7 @@ const POLL_INTERVAL_MS = 2000;
 const TRANSCRIPT_RETRY_LIMIT = 8;
 const FALLBACK_SPEAKER_ID = "UNKNOWN_SPEAKER";
 const FALLBACK_SPEAKER_LABEL = "Speaker";
+const MANUAL_SPEAKER_PREFIX = "MANUAL_SPEAKER_";
 const PRELOAD_TRANSCRIPT_ID = DEFAULT_MEDIA_SRC ? TRANSCRIPT_ID : undefined;
 const DEFAULT_SPEAKER_COUNT = 2;
 const SPEAKER_COUNT_OPTIONS: SpeakerCount[] = [1, 2, 3];
@@ -243,6 +244,7 @@ interface ReviewSentenceDraft {
 
 interface ReviewDraft {
   conversationTitle: string;
+  speakerIds: string[];
   speakerLabels: Record<string, string>;
   sentences: Record<string, ReviewSentenceDraft>;
 }
@@ -449,6 +451,9 @@ function formatSpeakerLabel(speakerId: string, index: number, speakerLabels: Rec
     if (!Number.isNaN(suffix)) {
       return `Speaker ${suffix + 1}`;
     }
+  }
+  if (speakerId.startsWith(MANUAL_SPEAKER_PREFIX)) {
+    return index >= 0 ? `Speaker ${index + 1}` : speakerId;
   }
   return index >= 0 ? `Speaker ${index + 1}` : speakerId;
 }
@@ -1299,21 +1304,36 @@ function detectSpeakerIds(document: PlaybackDocument | null): string[] {
   if (!document) {
     return [];
   }
+  return collectSpeakerIdsFromDocument(document);
+}
+
+function collectSpeakerIdsFromDocument(document: PlaybackDocument): string[] {
   const seen = new Set<string>();
   const detected: string[] = [];
 
   for (const sentence of document.sentenceUnits) {
-    if (!sentence.speaker_id || seen.has(sentence.speaker_id)) {
+    for (const candidateSpeakerId of [sentence.display_speaker_id, sentence.speaker_id, sentence.manual_speaker_id]) {
+      if (!candidateSpeakerId || seen.has(candidateSpeakerId)) {
+        continue;
+      }
+      seen.add(candidateSpeakerId);
+      detected.push(candidateSpeakerId);
+    }
+  }
+
+  for (const speakerId of Object.keys(document.speakerLabels ?? {})) {
+    if (!speakerId || seen.has(speakerId)) {
       continue;
     }
-    seen.add(sentence.speaker_id);
-    detected.push(sentence.speaker_id);
+    seen.add(speakerId);
+    detected.push(speakerId);
   }
 
   return detected;
 }
 
 function buildReviewDraft(document: PlaybackDocument): ReviewDraft {
+  const speakerIds = collectSpeakerIdsFromDocument(document);
   const sentences: Record<string, ReviewSentenceDraft> = {};
   for (const sentence of document.sentenceUnits) {
     sentences[sentence.id] = {
@@ -1325,6 +1345,7 @@ function buildReviewDraft(document: PlaybackDocument): ReviewDraft {
 
   return {
     conversationTitle: document.conversationTitle ?? "",
+    speakerIds: speakerIds.length > 0 ? speakerIds : [`${MANUAL_SPEAKER_PREFIX}00`],
     speakerLabels: { ...document.speakerLabels },
     sentences,
   };
@@ -1355,11 +1376,10 @@ function isReviewDraftDirty(document: PlaybackDocument | null, draft: ReviewDraf
     return false;
   }
 
-  const speakerIds = detectSpeakerIds(document);
   if (normalizeLabel(draft.conversationTitle) !== normalizeLabel(document.conversationTitle)) {
     return true;
   }
-  if (!areSpeakerLabelsEqual(draft.speakerLabels, document.speakerLabels, speakerIds)) {
+  if (!areSpeakerLabelsEqual(draft.speakerLabels, document.speakerLabels, draft.speakerIds)) {
     return true;
   }
 
@@ -1373,8 +1393,7 @@ function isReviewDraftDirty(document: PlaybackDocument | null, draft: ReviewDraf
 }
 
 function buildReviewPayload(document: PlaybackDocument, draft: ReviewDraft, reviewStatus: ReviewStatus) {
-  const speakerIds = detectSpeakerIds(document);
-  const speakerLabels = normalizeSpeakerLabels(draft.speakerLabels, speakerIds);
+  const speakerLabels = normalizeSpeakerLabels(draft.speakerLabels, draft.speakerIds);
   const sentenceOverrides = document.sentenceUnits
     .map((sentence) => {
       const sentenceDraft = draft.sentences[sentence.id];
@@ -1402,6 +1421,17 @@ function buildReviewPayload(document: PlaybackDocument, draft: ReviewDraft, revi
     review_status: reviewStatus,
     sentence_overrides: sentenceOverrides,
   };
+}
+
+function buildNextManualSpeakerId(existingSpeakerIds: string[]): string {
+  const existingIds = new Set(existingSpeakerIds);
+  let nextIndex = 0;
+
+  while (existingIds.has(`${MANUAL_SPEAKER_PREFIX}${nextIndex.toString().padStart(2, "0")}`)) {
+    nextIndex += 1;
+  }
+
+  return `${MANUAL_SPEAKER_PREFIX}${nextIndex.toString().padStart(2, "0")}`;
 }
 
 function getSpeechRecognitionConstructor(): SpeechRecognitionConstructorLike | null {
@@ -1486,6 +1516,10 @@ function formatLiveCaptureState(state: LiveCaptureState, session: LiveSessionRes
     return "Finalizing live session";
   }
   return "Ready";
+}
+
+function shouldReturnToArchivesOnErrorDismiss(errorMessage: string | null): boolean {
+  return typeof errorMessage === "string" && errorMessage.includes("(500)");
 }
 
 export function App() {
@@ -1925,6 +1959,7 @@ export function App() {
   const shouldBuildConversationState = !!document && (mode === "review" || mode === "playback");
   const utterances = shouldBuildConversationState ? buildUtterances(document) : [];
   const speakerIds = shouldBuildConversationState ? detectSpeakerIds(document) : [];
+  const reviewSpeakerIds = reviewDraft?.speakerIds ?? speakerIds;
   const speakerLabels = shouldBuildConversationState ? reviewDraft?.speakerLabels ?? document?.speakerLabels ?? {} : {};
   const speakers = shouldBuildConversationState ? buildSpeakerSummaries(utterances, speakerLabels) : [];
   const isReviewDirty = mode === "review" ? isReviewDraftDirty(document, reviewDraft) : false;
@@ -2016,6 +2051,14 @@ export function App() {
     }
 
     setMode(nextMode);
+  };
+
+  const handleDismissError = () => {
+    const shouldReturnToArchives = shouldReturnToArchivesOnErrorDismiss(error) && mode !== "select";
+    setError(null);
+    if (shouldReturnToArchives) {
+      setMode("select");
+    }
   };
 
   const persistLiveEvent = async (
@@ -2522,6 +2565,20 @@ export function App() {
     setSaveState("idle");
   };
 
+  const addDraftSpeaker = () => {
+    setReviewDraft((currentDraft) => {
+      if (!currentDraft) {
+        return currentDraft;
+      }
+
+      return {
+        ...currentDraft,
+        speakerIds: [...currentDraft.speakerIds, buildNextManualSpeakerId(currentDraft.speakerIds)],
+      };
+    });
+    setSaveState("idle");
+  };
+
   const updateDraftSentence = (sentenceId: string, updates: Partial<ReviewSentenceDraft>) => {
     setReviewDraft((currentDraft) => {
       if (!currentDraft) {
@@ -2767,7 +2824,7 @@ export function App() {
           <p className="status-card__eyebrow">Contour Playback</p>
           <h1>Something went wrong</h1>
           <p>{error}</p>
-          <button type="button" className="ghost-button" onClick={() => setError(null)}>
+          <button type="button" className="ghost-button" onClick={handleDismissError}>
             Dismiss
           </button>
         </section>
@@ -3219,7 +3276,6 @@ export function App() {
           <article className="surface-card review-media review-header-card">
             <div className="empty-state">
               <p>Loading transcript...</p>
-              <p>Pulling the archive document and media into the editor.</p>
             </div>
           </article>
         </section>
@@ -3283,25 +3339,28 @@ export function App() {
                 </div>
               </div>
 
-              {speakerIds.length > 0 ? (
-                <div className="speaker-name-grid">
-                  {speakerIds.map((speakerId, index) => (
-                    <label key={speakerId} className="speaker-name-card">
-                      <span>{formatSpeakerLabel(speakerId, index)}</span>
-                      <input
-                        value={reviewDraft.speakerLabels[speakerId] ?? ""}
-                        onChange={(event) => updateDraftSpeakerLabel(speakerId, event.target.value)}
-                        placeholder={`Name ${formatSpeakerLabel(speakerId, index)}`}
-                      />
-                    </label>
-                  ))}
-                </div>
-              ) : (
+              {speakerIds.length === 0 ? (
                 <div className="empty-state">
                   <p>No speaker diarization labels were detected for this transcript.</p>
-                  <p>You can still title the conversation and edit the sentence text below.</p>
+                  <p>Add speakers manually, then assign each transcript line below.</p>
                 </div>
-              )}
+              ) : null}
+
+              <div className="speaker-name-grid">
+                {reviewSpeakerIds.map((speakerId, index) => (
+                  <label key={speakerId} className="speaker-name-card">
+                    <span>{formatSpeakerLabel(speakerId, index, reviewDraft.speakerLabels)}</span>
+                    <input
+                      value={reviewDraft.speakerLabels[speakerId] ?? ""}
+                      onChange={(event) => updateDraftSpeakerLabel(speakerId, event.target.value)}
+                      placeholder={`Name ${formatSpeakerLabel(speakerId, index, reviewDraft.speakerLabels)}`}
+                    />
+                  </label>
+                ))}
+                <button type="button" className="ghost-button" onClick={addDraftSpeaker}>
+                  Add Speaker
+                </button>
+              </div>
 
               <div className="transcript-grid transcript-grid--header" aria-hidden="true">
                 <span>Timestamp</span>
@@ -3313,13 +3372,13 @@ export function App() {
                 {document.sentenceUnits.map((sentence) => {
                   const sentenceDraft = reviewDraft.sentences[sentence.id];
                   const isActive = activeUtterance?.id === sentence.id;
-                  const speakerIndex = speakerIds.indexOf(sentenceDraft?.speakerId ?? sentence.speaker_id ?? "");
+                  const speakerIndex = reviewSpeakerIds.indexOf(sentenceDraft?.speakerId ?? sentence.speaker_id ?? "");
 
                   return (
                     <div key={sentence.id} className={`transcript-row transcript-row--editing${isActive ? " transcript-row--active" : ""}`}>
                       <div className="transcript-grid">
                         <span className="transcript-row__time">{formatTimestamp(sentence.start_ms)}</span>
-                        {speakerIds.length > 0 && sentenceDraft ? (
+                        {reviewSpeakerIds.length > 0 && sentenceDraft ? (
                           <label className="speaker-mode transcript-row__speaker-field">
                             <select
                               value={sentenceDraft.speakerId ?? ""}
@@ -3330,7 +3389,7 @@ export function App() {
                               }
                             >
                               <option value="">Unassigned</option>
-                              {speakerIds.map((speakerId, index) => (
+                              {reviewSpeakerIds.map((speakerId, index) => (
                                 <option key={speakerId} value={speakerId}>
                                   {formatSpeakerLabel(speakerId, index, reviewDraft.speakerLabels)}
                                 </option>

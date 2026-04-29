@@ -59,6 +59,7 @@ app.add_middleware(
 )
 
 ALLOWED_REVIEW_STATUSES = {"not_started", "in_progress", "completed"}
+MANUAL_SPEAKER_PREFIX = "MANUAL_SPEAKER_"
 
 
 @app.on_event("startup")
@@ -179,6 +180,18 @@ def _get_owned_transcript(session: Session, transcript_id: str, owner_user_id: s
     if transcript is None:
         raise HTTPException(status_code=404, detail="transcript not found")
     return transcript
+
+
+def _is_valid_manual_speaker_id(speaker_id: str) -> bool:
+    if not speaker_id.startswith(MANUAL_SPEAKER_PREFIX):
+        return False
+    suffix = speaker_id.removeprefix(MANUAL_SPEAKER_PREFIX)
+    return suffix.isdigit()
+
+
+def _is_allowed_review_speaker_id(speaker_id: str, allowed_speaker_ids: set[str]) -> bool:
+    normalized_speaker_id = speaker_id.strip()
+    return normalized_speaker_id in allowed_speaker_ids or _is_valid_manual_speaker_id(normalized_speaker_id)
 
 
 @app.get("/jobs", response_model=JobListResponse)
@@ -486,7 +499,7 @@ def update_transcript_review(
 
     cleaned_speaker_labels: dict[str, str] = {}
     for speaker_id, label in request.speaker_labels.items():
-        if speaker_id not in allowed_speaker_ids:
+        if not _is_allowed_review_speaker_id(speaker_id, allowed_speaker_ids):
             raise HTTPException(status_code=400, detail=f"invalid speaker id in speaker_labels: {speaker_id}")
         if isinstance(label, str) and label.strip():
             cleaned_speaker_labels[speaker_id] = label.strip()
@@ -499,7 +512,9 @@ def update_transcript_review(
         if override.sentence_unit_id in seen_sentence_ids:
             raise HTTPException(status_code=400, detail=f"duplicate sentence id: {override.sentence_unit_id}")
         seen_sentence_ids.add(override.sentence_unit_id)
-        if override.manual_speaker_id is not None and override.manual_speaker_id not in allowed_speaker_ids:
+        if override.manual_speaker_id is not None and not _is_allowed_review_speaker_id(
+            override.manual_speaker_id, allowed_speaker_ids
+        ):
             raise HTTPException(status_code=400, detail=f"invalid speaker id in sentence override: {override.manual_speaker_id}")
 
     review_status = request.review_status.strip()

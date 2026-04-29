@@ -1,9 +1,11 @@
 import unittest
+from unittest.mock import patch
 
 from asr_viz.providers.diarization import (
     DiarizationUnavailableError,
     PyannoteDiarizationProvider,
     SpeakerTurn,
+    _normalize_diarization_import_error,
     _normalize_diarization_error,
 )
 
@@ -93,3 +95,30 @@ class PyannoteProviderTests(unittest.TestCase):
         self.assertIsInstance(normalized, DiarizationUnavailableError)
         self.assertEqual(normalized.original_exception_type, "RuntimeError")
         self.assertEqual(normalized.original_exception_message, "401 Client Error: Unauthorized for url")
+
+    def test_normalized_import_error_mentions_numpy_compatibility_when_present(self) -> None:
+        original = RuntimeError("Failed to initialize NumPy: _ARRAY_API not found")
+
+        normalized = _normalize_diarization_import_error(original, model_name="test-model")
+
+        self.assertIsInstance(normalized, DiarizationUnavailableError)
+        self.assertIn("NumPy", str(normalized))
+        self.assertEqual(normalized.original_exception_type, "RuntimeError")
+        self.assertEqual(normalized.original_exception_message, "Failed to initialize NumPy: _ARRAY_API not found")
+
+    def test_extract_turns_converts_pyannote_import_runtime_error_into_unavailable_error(self) -> None:
+        provider = PyannoteDiarizationProvider(model_name="test-model", token="token", num_speakers=2)
+
+        original_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "pyannote.audio":
+                raise RuntimeError("Failed to initialize NumPy: _ARRAY_API not found")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            with self.assertRaises(DiarizationUnavailableError) as context:
+                provider._extract_turns("/tmp/example.wav")
+
+        self.assertIn("NumPy", str(context.exception))
+        self.assertEqual(context.exception.original_exception_type, "RuntimeError")

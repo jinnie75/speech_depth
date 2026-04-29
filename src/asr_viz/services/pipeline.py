@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -54,6 +56,7 @@ class ProcessingPipeline:
             raise ValueError(f"job {job_id} not found")
 
         try:
+            source_uri: str | None = None
             source_uri = resolve_media_source(job, job.media_asset)
             preferred_language = _preferred_language_override(job.media_asset.ingest_metadata)
             speaker_count_override = _speaker_count_override(job.media_asset.ingest_metadata)
@@ -202,6 +205,16 @@ class ProcessingPipeline:
             session.refresh(job)
             return job
         except Exception as exc:
+            print(
+                "job_failed "
+                f"job_id={job_id} "
+                f"stage={getattr(job, 'current_stage', None)!r} "
+                f"source_uri={source_uri!r} "
+                f"error_type={type(exc).__name__!r} "
+                f"error_message={_single_line_error_message(str(exc))!r} "
+                f"traceback={_single_line_error_message(traceback.format_exc())!r}",
+                flush=True,
+            )
             session.rollback()
             failed_job = session.get(ProcessingJob, job_id)
             if failed_job is None:
@@ -209,6 +222,11 @@ class ProcessingPipeline:
             failed_job.status = JobStatus.FAILED.value
             failed_job.current_stage = JobStage.FAILED.value
             failed_job.error_message = str(exc)
+            failed_job.stage_details = {
+                **(failed_job.stage_details or {}),
+                "failure_stage": getattr(job, "current_stage", None),
+                "failure_error_type": type(exc).__name__,
+            }
             failed_job.retry_count += 1
             session.commit()
             session.refresh(failed_job)

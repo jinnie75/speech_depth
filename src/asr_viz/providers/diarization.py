@@ -78,6 +78,8 @@ class PyannoteDiarizationProvider(DiarizationProvider):
                 raise DiarizationUnavailableError(
                     "pyannote.audio is not installed. Install with `pip install '.[diarization]'`."
                 ) from exc
+            except Exception as exc:
+                raise _normalize_diarization_import_error(exc, model_name=self._model_name) from exc
             try:
                 self._pipeline = Pipeline.from_pretrained(self._model_name, token=self._token)
             except TypeError:
@@ -198,3 +200,18 @@ def _normalize_diarization_error(exc: Exception, *, model_name: str) -> Exceptio
             original_exception=exc,
         )
     return exc
+
+
+def _normalize_diarization_import_error(exc: Exception, *, model_name: str) -> DiarizationUnavailableError:
+    message = str(exc)
+    lowered = message.lower()
+    if "numpy" in lowered or "_array_api" in lowered:
+        return DiarizationUnavailableError(
+            f"Diarization model `{model_name}` is unavailable because the pyannote/torch runtime is not "
+            "compatible with the installed NumPy version. Pin `numpy<2` for the worker environment.",
+            original_exception=exc,
+        )
+    return DiarizationUnavailableError(
+        f"Diarization model `{model_name}` is unavailable because pyannote.audio failed to import or initialize.",
+        original_exception=exc,
+    )

@@ -27,6 +27,7 @@ transcription = [
 ]
 diarization = [
   "huggingface-hub<1.0",
+  "numpy<2",
   "pyannote.audio==3.3.2",
   "torch==2.2.2",
   "torchaudio==2.2.2",
