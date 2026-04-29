@@ -1519,7 +1519,7 @@ function formatLiveCaptureState(state: LiveCaptureState, session: LiveSessionRes
 }
 
 function shouldReturnToArchivesOnErrorDismiss(errorMessage: string | null): boolean {
-  return typeof errorMessage === "string" && errorMessage.includes("(500)");
+  return typeof errorMessage === "string" && /\(5\d\d\)/.test(errorMessage);
 }
 
 export function App() {
@@ -2054,9 +2054,29 @@ export function App() {
   };
 
   const handleDismissError = () => {
-    const shouldReturnToArchives = shouldReturnToArchivesOnErrorDismiss(error) && mode !== "select";
+    const shouldReturnToArchives = shouldReturnToArchivesOnErrorDismiss(error);
     setError(null);
     if (shouldReturnToArchives) {
+      pollingSessionIdRef.current = null;
+      liveStopRequestedRef.current = true;
+      liveRecognitionRestartEnabledRef.current = false;
+      liveRecognitionRef.current?.stop();
+      liveRecognitionRef.current = null;
+      liveMediaRecorderRef.current?.stop();
+      liveMediaRecorderRef.current = null;
+      liveMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveMediaStreamRef.current = null;
+      setStreamSession(null);
+      setLiveSession(null);
+      setLiveCaptureState("idle");
+      setLiveTranscriptEntries([]);
+      setLiveNotice(null);
+      setLiveManualText("");
+      setIsSavingLiveManualText(false);
+      setPendingFile(null);
+      setUploadProgress(null);
+      setIsUploading(false);
+      setTranscriptLoadStatus("idle");
       setMode("select");
     }
   };
@@ -3085,17 +3105,13 @@ export function App() {
           <section className="about-shell__content surface-card">
             <p className="about-shell__lede">
               <strong>Of Terrains We Speak</strong> is an interactive conversation visualizer that reveals patterns of
-              hedging, emotion, and vulnerability, and how differently these can look across cultures, contexts, and
+              hedging, emotion, and vulnerability, and how different they can look across cultures, contexts, and
               relationships.
             </p>
             <p>
-              Each speaker is represented by different colored terrains that grows as the conversation progresses, its area proportional to how much they’ve spoken.
-            </p>
-            <p>
-              To create your own, upload a recording of a conversation or monologue.
-              The system transcribes what it hears, identifies speakers, and detects expressions of hedging and uncertainty, each one adding elevation to the topographic map.
-              Expressions of emotions, expectations, and reflections on life is identified and drawn into part of the map.
-              All uploaded audio and generated images are saved only to your browser's local storage and never leave your computer.
+              Each speaker is represented by different colored terrains that grows as the conversation progresses,
+              the area proportional to how much they’ve spoken. Each time there is an expression of uncertainty or a hedge, a level of elevation is added to the topographic map.
+              Expressions of emotions, vulnerability and reflections on life are drawn directly into part of the map.
             </p>
             <figure className="about-shell__demo">
               <video
@@ -3111,6 +3127,11 @@ export function App() {
                 Your browser does not support the video tag.
               </video>
             </figure>
+            <p>
+              To create your own, upload a recording of a conversation or monologue.
+              The system transcribes what it hears, identifies who said what and creates the visualization.
+              All uploaded audio and generated images are saved to a storage system private to you.
+            </p>
             <p>
               I am bilingual in Korean and English but have spent most of my life in Korea.
               Navigating male-dominant workplaces and a new life in America has been confusing,
