@@ -32,11 +32,12 @@ def _configure_huggingface_environment() -> None:
 
 
 def _log_worker_startup_configuration() -> None:
-    diarization_provider_name = "pyannote" if settings.huggingface_token else "noop"
+    diarization_provider_name = "pyannote" if settings.enable_diarization and settings.huggingface_token else "noop"
     print(
         "worker_startup "
         f"app_env={settings.app_env} "
         f"worker_name={settings.worker_name} "
+        f"enable_diarization={settings.enable_diarization} "
         f"diarization_provider={diarization_provider_name} "
         f"diarization_model={settings.diarization_model} "
         f"huggingface_token={_mask_token(settings.huggingface_token)} "

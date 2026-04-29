@@ -60,7 +60,8 @@ class ProcessingPipeline:
             source_uri = resolve_media_source(job, job.media_asset)
             preferred_language = _preferred_language_override(job.media_asset.ingest_metadata)
             speaker_count_override = _speaker_count_override(job.media_asset.ingest_metadata)
-            should_run_diarization = job.diarization_enabled and speaker_count_override != 1
+            diarization_available = self._diarization_provider.is_available
+            should_run_diarization = job.diarization_enabled and speaker_count_override != 1 and diarization_available
             transcript_result = self._transcription_provider.transcribe(
                 source_uri,
                 preferred_language=preferred_language,
@@ -153,6 +154,13 @@ class ProcessingPipeline:
                     "diarization_enabled": False,
                     "diarization_skipped": True,
                     "diarization_skip_reason": "single_speaker",
+                }
+            elif job.diarization_enabled and not diarization_available:
+                job.stage_details = {
+                    **job.stage_details,
+                    "diarization_enabled": False,
+                    "diarization_skipped": True,
+                    "diarization_skip_reason": "provider_disabled",
                 }
 
             sentence_units: list[SentenceUnit] = []

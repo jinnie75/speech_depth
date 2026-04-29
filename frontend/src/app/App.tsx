@@ -2070,37 +2070,36 @@ export function App() {
       mediaObjectUrlRef.current = null;
     }
 
-    startTransition(() => {
-      setMode("select");
-      setDocument(null);
-      setReviewDraft(null);
-      setTranscriptLoadStatus("idle");
-      setStreamSession(null);
-      setLiveSession(null);
-      setLiveCaptureState("idle");
-      setLiveTranscriptEntries([]);
-      setLiveNotice(null);
-      setLiveManualText("");
-      setIsSavingLiveManualText(false);
-      setPendingFile(null);
-      setUploadProgress(null);
-      setIsUploading(false);
-      setSelectedProcessedTranscriptId("");
-      setMediaSrc(DEFAULT_MEDIA_SRC);
-      setMediaName(DEFAULT_MEDIA_SRC ? "Configured media source" : "No file selected");
-      setPlaybackStarted(false);
-      setCurrentTimeMs(0);
-      setMediaDurationMs(0);
-      setIsMediaPlaying(false);
-      setIsMediaMuted(false);
-      setIsPlaybackComplete(false);
-      setSaveState("idle");
-      setError(null);
-    });
+    setMode("select");
+    setDocument(null);
+    setReviewDraft(null);
+    setTranscriptLoadStatus("idle");
+    setStreamSession(null);
+    setLiveSession(null);
+    setLiveCaptureState("idle");
+    setLiveTranscriptEntries([]);
+    setLiveNotice(null);
+    setLiveManualText("");
+    setIsSavingLiveManualText(false);
+    setPendingFile(null);
+    setUploadProgress(null);
+    setIsUploading(false);
+    setSelectedProcessedTranscriptId("");
+    setMediaSrc(DEFAULT_MEDIA_SRC);
+    setMediaName(DEFAULT_MEDIA_SRC ? "Configured media source" : "No file selected");
+    setPlaybackStarted(false);
+    setCurrentTimeMs(0);
+    setMediaDurationMs(0);
+    setIsMediaPlaying(false);
+    setIsMediaMuted(false);
+    setIsPlaybackComplete(false);
+    setSaveState("idle");
+    setError(null);
   };
 
   const handleDismissError = () => {
-    const shouldReturnToArchives = shouldReturnToArchivesOnErrorDismiss(error);
+    const shouldReturnToArchives =
+      shouldReturnToArchivesOnErrorDismiss(error) || transcriptLoadStatus === "loading" || mode === "review" || mode === "playback";
     if (shouldReturnToArchives) {
       resetToArchiveView();
       return;

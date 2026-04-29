@@ -20,7 +20,7 @@ def build_transcription_provider() -> TranscriptionProvider:
 
 
 def build_diarization_provider() -> DiarizationProvider:
-    if settings.huggingface_token:
+    if settings.enable_diarization and settings.huggingface_token:
         return PyannoteDiarizationProvider(
             model_name=settings.diarization_model,
             token=settings.huggingface_token,

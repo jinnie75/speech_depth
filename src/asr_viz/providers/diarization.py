@@ -10,6 +10,10 @@ from asr_viz.pipeline.types import SentenceCandidate
 class DiarizationProvider(ABC):
     model_version: str = "unknown"
 
+    @property
+    def is_available(self) -> bool:
+        return True
+
     def assign_speakers(
         self,
         sentences: list[SentenceCandidate],
@@ -25,6 +29,10 @@ class DiarizationProvider(ABC):
 
 class NoOpDiarizationProvider(DiarizationProvider):
     model_version = "noop-diarizer:v1"
+
+    @property
+    def is_available(self) -> bool:
+        return False
 
 
 class DiarizationUnavailableError(RuntimeError):

@@ -219,6 +219,52 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(job.stage_details["diarization_enabled"], False)
             self.assertTrue(all(sentence.speaker_id == "SPEAKER_00" for sentence in sentence_units))
 
+    def test_pipeline_skips_diarization_when_provider_is_disabled(self) -> None:
+        tmp_path = Path(self._testMethodName)
+        tmp_path.mkdir(exist_ok=True)
+        source = tmp_path / "dialogue.txt"
+        source.write_text("Please review the design.\nWe should fix the bug tomorrow.", encoding="utf-8")
+
+        self.addCleanup(lambda: shutil.rmtree(tmp_path, ignore_errors=True))
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        pipeline = ProcessingPipeline(
+            transcription_provider=MockTranscriptionProvider(),
+            analysis_provider=HeuristicAnalysisProvider(),
+            diarization_provider=NoOpDiarizationProvider(),
+        )
+
+        with session_factory() as session:
+            create_job(
+                session,
+                source_uri=str(source),
+                source_type="file",
+                diarization_enabled=True,
+                mime_type="text/plain",
+                checksum=None,
+                ingest_metadata={"speaker_mode": "dialogue"},
+            )
+
+        with session_factory() as session:
+            claimed_job = pipeline.claim_next_job(session)
+            self.assertIsNotNone(claimed_job)
+            result_job = pipeline.process_job(session, claimed_job.id)
+            self.assertEqual(result_job.status, "completed")
+
+        with session_factory() as session:
+            sentence_units = session.scalars(select(SentenceUnit).order_by(SentenceUnit.utterance_index.asc())).all()
+            job = session.scalar(select(ProcessingJob))
+
+            self.assertIsNotNone(job)
+            self.assertTrue(all(sentence.speaker_id is None for sentence in sentence_units))
+            self.assertIsNone(job.diarization_model_version)
+            self.assertEqual(job.stage_details["requested_num_speakers"], 2)
+            self.assertEqual(job.stage_details["diarization_enabled"], False)
+            self.assertEqual(job.stage_details["diarization_skipped"], True)
+            self.assertEqual(job.stage_details["diarization_skip_reason"], "provider_disabled")
+
     def test_pipeline_completes_when_diarization_provider_is_unavailable(self) -> None:
         tmp_path = Path(self._testMethodName)
         tmp_path.mkdir(exist_ok=True)

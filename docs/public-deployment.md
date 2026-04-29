@@ -71,7 +71,13 @@ This version assumes:
 
 - [ ] Create a Render web service for the FastAPI app.
 - [ ] Configure dashboard environment variables only.
-- [ ] Make sure the build installs the app dependencies from `pyproject.toml`, including the Postgres driver.
+- [ ] Use a build command that installs only the API dependencies from `pyproject.toml`, for example:
+
+```bash
+pip install -e .
+```
+
+- [ ] Do not install the transcription or diarization extras on the API service. Those pull large packages such as `faster-whisper`, `torch`, and `torchaudio`, which are only needed by the background worker and can cause slow or flaky API builds.
 - [ ] Set `APP_ENV=production`.
 - [ ] Set `DATABASE_URL`.
 - [ ] Set `AUTO_CREATE_SCHEMA=false`.
@@ -86,6 +92,7 @@ This version assumes:
 - [ ] Set `CLERK_JWKS_URL` if used.
 - [ ] Set `CORS_ORIGINS` to the current Vercel preview URL, and later `https://app.mydomain.com`.
 - [ ] Set `ENABLE_MOCK_TRANSCRIPTION=false`.
+- [ ] Set `ENABLE_DIARIZATION=false` on a `2 GB` worker if you need the service to stay stable without speaker labels for now.
 - [ ] Set `ASR_MODEL=small`.
 - [ ] Set `DIARIZATION_MIN_SPEAKERS=1`.
 - [ ] Set `DIARIZATION_MAX_SPEAKERS=3`.
@@ -110,7 +117,19 @@ PYTHONPATH=src alembic upgrade head
 - [ ] Create a separate Render background worker service.
 - [ ] Use the same codebase as the API.
 - [ ] Configure the worker with dashboard environment variables only.
-- [ ] Make sure the build installs the app dependencies from `pyproject.toml`, including the Postgres driver.
+- [ ] Use a build command that installs the worker dependencies from `pyproject.toml`, for example:
+
+```bash
+pip install -e ".[transcription,diarization]"
+```
+
+- [ ] If you want a lighter worker without speaker diarization, install only:
+
+```bash
+pip install -e ".[transcription]"
+```
+
+- [ ] For a low-memory Render worker, also set `ENABLE_DIARIZATION=false` so upload jobs skip diarization cleanly instead of attempting to load `pyannote` and risking an OOM kill.
 - [ ] Copy the same runtime env vars used by the API:
   `APP_ENV`, `DATABASE_URL`, `AUTH_PROVIDER`, `REQUIRE_AUTH`, `ENABLE_MOCK_TRANSCRIPTION`,
   `ASR_MODEL`, `DIARIZATION_MIN_SPEAKERS`, `DIARIZATION_MAX_SPEAKERS`,
