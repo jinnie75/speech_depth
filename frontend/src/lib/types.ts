@@ -123,7 +123,6 @@ export interface SentenceUnitResponse {
 export interface CreateStreamSessionRequest {
   mime_type: string | null;
   original_filename: string | null;
-  diarization_enabled: boolean;
   ingest_metadata: Record<string, unknown>;
 }
 
@@ -143,7 +142,6 @@ export interface StreamSessionResponse {
   storage_path: string;
   total_bytes: number;
   received_chunks: number;
-  diarization_enabled: boolean;
   ingest_metadata: Record<string, unknown>;
   error_message: string | null;
   processing_job_id: string | null;

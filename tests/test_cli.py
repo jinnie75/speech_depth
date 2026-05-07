@@ -74,7 +74,6 @@ class CliTests(unittest.TestCase):
                             "source_type": None,
                             "mime_type": "text/plain",
                             "language": "ko",
-                            "diarization": False,
                             "metadata": "{\"source\":\"test\"}",
                         },
                     )()
@@ -122,7 +121,6 @@ class CliTests(unittest.TestCase):
                     owner_user_id=self.owner_user_id,
                     source_uri=str(source),
                     source_type="file",
-                    diarization_enabled=False,
                     mime_type="text/plain",
                     checksum=None,
                     ingest_metadata={},

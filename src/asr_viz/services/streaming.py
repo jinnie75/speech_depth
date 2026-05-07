@@ -33,7 +33,6 @@ def create_stream_session(
     owner_user_id: str | None = None,
     mime_type: str | None,
     original_filename: str | None,
-    diarization_enabled: bool,
     ingest_metadata: dict | None,
 ) -> StreamIngestionSession:
     resolved_owner_user_id = owner_user_id or settings.auth_dev_user_id
@@ -46,7 +45,6 @@ def create_stream_session(
         mime_type=mime_type,
         original_filename=original_filename,
         storage_path=str(storage_dir / _build_storage_filename("pending", original_filename, mime_type)),
-        diarization_enabled=diarization_enabled,
         ingest_metadata=ingest_metadata or {},
     )
     session.add(session_record)
@@ -108,7 +106,6 @@ def finalize_stream_session(session: Session, stream_session: StreamIngestionSes
         owner_user_id=stream_session.owner_user_id,
         source_uri=source_uri,
         source_type=source_type,
-        diarization_enabled=stream_session.diarization_enabled,
         mime_type=stream_session.mime_type,
         checksum=checksum,
         ingest_metadata={

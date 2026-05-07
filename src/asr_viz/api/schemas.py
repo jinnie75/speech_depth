@@ -13,7 +13,6 @@ class CreateJobRequest(BaseModel):
 
     source_uri: str = Field(min_length=1)
     source_type: str | None = None
-    diarization_enabled: bool = False
     mime_type: str | None = None
     checksum: str | None = None
     preferred_language: PreferredLanguage = "auto"
@@ -25,7 +24,6 @@ class CreateStreamSessionRequest(BaseModel):
 
     mime_type: str | None = None
     original_filename: str | None = None
-    diarization_enabled: bool = False
     preferred_language: PreferredLanguage = "auto"
     ingest_metadata: dict = Field(default_factory=dict)
 
@@ -107,7 +105,6 @@ class JobResponse(BaseModel):
     current_stage: str
     error_message: str | None
     retry_count: int
-    diarization_enabled: bool
     asr_model_version: str | None
     diarization_model_version: str | None
     analysis_model_version: str | None
@@ -140,7 +137,6 @@ class StreamSessionResponse(BaseModel):
     storage_path: str
     total_bytes: int
     received_chunks: int
-    diarization_enabled: bool
     ingest_metadata: dict
     error_message: str | None
     processing_job_id: str | None

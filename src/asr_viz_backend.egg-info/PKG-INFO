@@ -5,8 +5,11 @@ Summary: Local-first backend for ingesting media, transcribing conversations, an
 Requires-Python: >=3.12
 Description-Content-Type: text/markdown
 Requires-Dist: alembic>=1.16.0
+Requires-Dist: boto3>=1.38.0
 Requires-Dist: fastapi>=0.128.0
 Requires-Dist: nltk>=3.9.0
+Requires-Dist: psycopg[binary]>=3.2.9
+Requires-Dist: PyJWT[crypto]>=2.10.1
 Requires-Dist: pydantic>=2.12.0
 Requires-Dist: sniffio>=1.3.1
 Requires-Dist: sqlalchemy>=2.0.0
@@ -14,8 +17,11 @@ Requires-Dist: uvicorn>=0.37.0
 Provides-Extra: transcription
 Requires-Dist: faster-whisper>=1.0.0; extra == "transcription"
 Provides-Extra: diarization
-Requires-Dist: pyannote.audio>=3.3.2; extra == "diarization"
-Requires-Dist: torch>=2.2.0; extra == "diarization"
+Requires-Dist: huggingface-hub<1.0; extra == "diarization"
+Requires-Dist: numpy<2; extra == "diarization"
+Requires-Dist: pyannote.audio==3.3.2; extra == "diarization"
+Requires-Dist: torch==2.2.2; extra == "diarization"
+Requires-Dist: torchaudio==2.2.2; extra == "diarization"
 
 # ASR Viz Backend
 
@@ -76,12 +82,59 @@ The frontend expects the existing `/jobs` and `/transcripts/{id}` endpoints and 
 ## Environment Variables
 
 - `DATABASE_URL`
+- `APP_ENV`
+- `AUTO_CREATE_SCHEMA`
+- `AUTH_PROVIDER`
+- `REQUIRE_AUTH`
+- `AUTH_DEV_USER_ID`
+- `ANONYMOUS_SESSION_COOKIE_NAME`
+- `ANONYMOUS_SESSION_COOKIE_MAX_AGE_SECONDS`
+- `ANONYMOUS_SESSION_COOKIE_SECURE`
+- `ANONYMOUS_SESSION_COOKIE_DOMAIN`
+- `CLERK_ISSUER_URL`
+- `CLERK_AUDIENCE`
+- `CLERK_JWKS_URL`
 - `HUGGINGFACE_TOKEN`
 - `ASR_MODEL`
 - `DIARIZATION_MODEL`
 - `DIARIZATION_NUM_SPEAKERS`
 - `JOB_POLL_INTERVAL_SECONDS`
 - `ENABLE_MOCK_TRANSCRIPTION`
+- `MAX_UPLOAD_SIZE_BYTES`
+- `PER_USER_STORAGE_QUOTA_BYTES`
+- `LIVE_MODE_ENABLED`
+- `STORAGE_BACKEND`
+- `MEDIA_STORAGE_DIR`
+- `SIGNED_URL_TTL_SECONDS`
+- `R2_ACCOUNT_ID`
+- `R2_BUCKET_NAME`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+
+## Public Deployment Foundation
+
+The backend now includes the first public-web foundation slice:
+
+- owner scoping on jobs, transcripts, stream sessions, and live sessions
+- anonymous browser-session ownership via `HttpOnly` cookie, with optional Clerk bearer auth support
+- per-upload and per-user storage limits
+- Alembic scaffolding for managed schema migrations
+
+For local development and anonymous MVP deployment, `REQUIRE_AUTH=false` uses a durable anonymous session cookie so uploads, transcript edits, and playback stay attached to the same browser session across pages and refreshes.
+
+For production with anonymous-first access:
+
+1. set `REQUIRE_AUTH=false`
+2. set `AUTH_PROVIDER=clerk` only if you want to accept optional Clerk bearer tokens later
+3. configure `DATABASE_URL` for Postgres
+4. set cookie security vars for your deployed environment
+5. run migrations before starting the API:
+
+```bash
+PYTHONPATH=src alembic upgrade head
+```
+
+Deployment setup is tracked in the checklist at [docs/public-deployment.md](/Users/jinheeshim/Documents/ITP/thesis/v5_asr_viz/docs/public-deployment.md).
 
 ## Speaker Diarization
 
@@ -94,6 +147,8 @@ python3 -m asr_viz.cli submit /absolute/path/to/file.mp4 --mime-type video/mp4 -
 ```
 
 Set `DIARIZATION_NUM_SPEAKERS=2` in `.env.local` if you want to pin the speaker count.
+
+If you are using the default `pyannote/speaker-diarization-3.1` model, the Hugging Face account behind `HUGGINGFACE_TOKEN` must also have accepted access to that gated repository. A valid token without model access will now leave the transcript completed, but speaker labels will be skipped and the job will record the diarization warning in `stage_details`.
 
 Sentence units will then include `speaker_id` and `speaker_confidence` when the diarization model can assign them.
 

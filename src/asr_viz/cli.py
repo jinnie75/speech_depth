@@ -24,7 +24,6 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--source-type", choices=["file", "url", "opaque"], default=None)
     submit.add_argument("--mime-type", default=None)
     submit.add_argument("--language", choices=["auto", "en", "ko"], default="auto")
-    submit.add_argument("--diarization", action="store_true", help="Enable speaker diarization when available.")
     submit.add_argument(
         "--metadata",
         default="{}",
@@ -79,7 +78,6 @@ def _submit(args: argparse.Namespace) -> None:
             session,
             source_uri=args.source_uri,
             source_type=source_type,
-            diarization_enabled=args.diarization,
             mime_type=args.mime_type,
             checksum=None,
             ingest_metadata=metadata,
@@ -87,7 +85,6 @@ def _submit(args: argparse.Namespace) -> None:
         print(f"job_id={job.id}")
         print(f"status={job.status}")
         print(f"source_type={source_type}")
-        print(f"diarization_enabled={job.diarization_enabled}")
 
 
 def _status(args: argparse.Namespace) -> None:

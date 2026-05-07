@@ -105,7 +105,6 @@ class TranscriptReviewApiTests(unittest.TestCase):
                 transcript_id=transcript.id,
                 status=JobStatus.COMPLETED.value,
                 current_stage=JobStage.COMPLETE.value,
-                diarization_enabled=True,
                 stage_details={"status": "completed"},
             )
             session.add(job)

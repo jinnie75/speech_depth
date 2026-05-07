@@ -89,7 +89,6 @@ def _serialize_stream_session(stream_session: StreamIngestionSession) -> StreamS
         storage_path=stream_session.storage_path,
         total_bytes=stream_session.total_bytes,
         received_chunks=stream_session.received_chunks,
-        diarization_enabled=stream_session.diarization_enabled,
         ingest_metadata=stream_session.ingest_metadata,
         error_message=stream_session.error_message,
         processing_job_id=stream_session.processing_job_id,
@@ -249,7 +248,6 @@ def create_processing_job(
         owner_user_id=current_user.user_id,
         source_uri=request.source_uri,
         source_type=source_type,
-        diarization_enabled=request.diarization_enabled,
         mime_type=request.mime_type,
         checksum=request.checksum,
         ingest_metadata=_with_preferred_language(request.ingest_metadata, request.preferred_language),
@@ -391,7 +389,6 @@ def create_streaming_session(
         owner_user_id=current_user.user_id,
         mime_type=request.mime_type,
         original_filename=request.original_filename,
-        diarization_enabled=request.diarization_enabled,
         ingest_metadata=_with_preferred_language(request.ingest_metadata, request.preferred_language),
     )
     return _serialize_stream_session(stream_session)

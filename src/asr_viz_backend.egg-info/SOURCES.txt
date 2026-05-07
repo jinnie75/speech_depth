@@ -4,6 +4,7 @@ src/asr_viz/__init__.py
 src/asr_viz/cli.py
 src/asr_viz/worker.py
 src/asr_viz/api/__init__.py
+src/asr_viz/api/auth.py
 src/asr_viz/api/main.py
 src/asr_viz/api/schemas.py
 src/asr_viz/core/__init__.py
@@ -35,6 +36,7 @@ src/asr_viz/services/media.py
 src/asr_viz/services/pipeline.py
 src/asr_viz/services/providers.py
 src/asr_viz/services/streaming.py
+src/asr_viz/services/usage.py
 src/asr_viz_backend.egg-info/PKG-INFO
 src/asr_viz_backend.egg-info/SOURCES.txt
 src/asr_viz_backend.egg-info/dependency_links.txt

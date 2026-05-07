@@ -17,7 +17,6 @@ def create_job(
     owner_user_id: str | None = None,
     source_uri: str,
     source_type: str,
-    diarization_enabled: bool,
     mime_type: str | None,
     checksum: str | None,
     ingest_metadata: dict | None,
@@ -42,7 +41,6 @@ def create_job(
         media_asset_id=media_asset.id,
         status=JobStatus.QUEUED.value,
         current_stage=JobStage.INGESTION.value,
-        diarization_enabled=diarization_enabled,
         stage_details={"status": "queued"},
     )
     session.add(job)

@@ -2543,7 +2543,6 @@ export function App() {
       const createdSession = await createStreamSession({
         mime_type: file.type || null,
         original_filename: file.name,
-        diarization_enabled: true,
         ingest_metadata: {
           frontend_uploaded: true,
           diarization_num_speakers: speakerCount,

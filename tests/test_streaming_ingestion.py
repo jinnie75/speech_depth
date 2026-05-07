@@ -57,7 +57,6 @@ class StreamingIngestionTests(unittest.TestCase):
             json={
                 "mime_type": "text/plain",
                 "original_filename": "conversation.txt",
-                "diarization_enabled": False,
                 "preferred_language": "ko",
                 "ingest_metadata": {"source": "test"},
             },
@@ -133,7 +132,6 @@ class StreamingIngestionTests(unittest.TestCase):
                 json={
                     "mime_type": "audio/wav",
                     "original_filename": "uploaded.wav",
-                    "diarization_enabled": False,
                     "preferred_language": "en",
                     "ingest_metadata": {},
                 },
@@ -179,7 +177,6 @@ class StreamingIngestionTests(unittest.TestCase):
             json={
                 "mime_type": "text/plain",
                 "original_filename": "anonymous.txt",
-                "diarization_enabled": False,
                 "preferred_language": "en",
                 "ingest_metadata": {},
             },

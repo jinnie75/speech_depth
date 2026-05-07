@@ -22,14 +22,16 @@ export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 HOST="${ASR_VIZ_API_HOST:-0.0.0.0}"
 PORT="${PORT:-${ASR_VIZ_API_PORT:-8000}}"
 RELOAD_FLAG="${ASR_VIZ_API_RELOAD:-false}"
-UVICORN_ARGS=()
 
 if [ "$RELOAD_FLAG" = "true" ]; then
-  UVICORN_ARGS+=(--reload)
+  exec "$VENV_PYTHON" -m uvicorn asr_viz.api.main:app \
+    --reload \
+    --host "$HOST" \
+    --port "$PORT" \
+    "$@"
 fi
 
 exec "$VENV_PYTHON" -m uvicorn asr_viz.api.main:app \
-  "${UVICORN_ARGS[@]}" \
   --host "$HOST" \
   --port "$PORT" \
   "$@"

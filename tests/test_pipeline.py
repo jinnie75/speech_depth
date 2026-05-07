@@ -94,7 +94,6 @@ class PipelineTests(unittest.TestCase):
                 session,
                 source_uri=str(source),
                 source_type="file",
-                diarization_enabled=False,
                 mime_type="text/plain",
                 checksum=None,
                 ingest_metadata={"test": True},
@@ -124,7 +123,7 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("substance", analysis_results[0].analysis_payload)
             self.assertIn("sentence_count", job.stage_details)
             self.assertEqual(job.asr_model_version, "mock-transcriber:v1")
-            self.assertEqual(job.stage_details["diarization_skip_reason"], "disabled")
+            self.assertEqual(job.stage_details["diarization_skip_reason"], "provider_disabled")
 
     def test_pipeline_uses_preferred_language_for_korean_jobs(self) -> None:
         tmp_path = Path(self._testMethodName)
@@ -148,7 +147,6 @@ class PipelineTests(unittest.TestCase):
                 session,
                 source_uri=str(source),
                 source_type="file",
-                diarization_enabled=False,
                 mime_type="text/plain",
                 checksum=None,
                 ingest_metadata={"preferred_language": "ko"},
@@ -195,7 +193,6 @@ class PipelineTests(unittest.TestCase):
                 session,
                 source_uri=str(source),
                 source_type="file",
-                diarization_enabled=True,
                 mime_type="text/plain",
                 checksum=None,
                 ingest_metadata={"speaker_mode": "monologue"},
@@ -242,7 +239,6 @@ class PipelineTests(unittest.TestCase):
                 session,
                 source_uri=str(source),
                 source_type="file",
-                diarization_enabled=True,
                 mime_type="text/plain",
                 checksum=None,
                 ingest_metadata={"speaker_mode": "dialogue"},
@@ -288,7 +284,6 @@ class PipelineTests(unittest.TestCase):
                 session,
                 source_uri=str(source),
                 source_type="file",
-                diarization_enabled=True,
                 mime_type="text/plain",
                 checksum=None,
                 ingest_metadata={"speaker_mode": "dialogue"},
@@ -342,7 +337,6 @@ class PipelineTests(unittest.TestCase):
                 session,
                 source_uri=str(source),
                 source_type="file",
-                diarization_enabled=True,
                 mime_type="text/plain",
                 checksum=None,
                 ingest_metadata={"speaker_mode": "dialogue"},
@@ -354,5 +348,6 @@ class PipelineTests(unittest.TestCase):
             result_job = pipeline.process_job(session, claimed_job.id)
             self.assertEqual(result_job.status, "completed")
 
+        self.assertEqual(diarization_provider.calls, [(str(source), 2)])
         self.assertEqual(transcription_provider.release_calls, 1)
         self.assertEqual(diarization_provider.release_calls, 1)

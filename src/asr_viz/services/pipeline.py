@@ -61,7 +61,7 @@ class ProcessingPipeline:
             preferred_language = _preferred_language_override(job.media_asset.ingest_metadata)
             speaker_count_override = _speaker_count_override(job.media_asset.ingest_metadata)
             diarization_available = self._diarization_provider.is_available
-            should_run_diarization = job.diarization_enabled and speaker_count_override != 1 and diarization_available
+            should_run_diarization = speaker_count_override != 1 and diarization_available
             transcript_result = self._transcription_provider.transcribe(
                 source_uri,
                 preferred_language=preferred_language,
@@ -107,15 +107,7 @@ class ProcessingPipeline:
                 language_code=transcript_result.language_code,
             )
             self._transcription_provider.release_resources()
-            if not job.diarization_enabled:
-                sentences = _assign_single_speaker(sentences)
-                job.stage_details = {
-                    **job.stage_details,
-                    "diarization_enabled": False,
-                    "diarization_skipped": True,
-                    "diarization_skip_reason": "disabled",
-                }
-            elif should_run_diarization:
+            if should_run_diarization:
                 try:
                     sentences = self._diarization_provider.assign_speakers(
                         sentences,
@@ -156,7 +148,7 @@ class ProcessingPipeline:
                     }
                 finally:
                     self._diarization_provider.release_resources()
-            elif job.diarization_enabled and speaker_count_override == 1:
+            elif speaker_count_override == 1:
                 sentences = _assign_single_speaker(sentences)
                 job.stage_details = {
                     **job.stage_details,
@@ -164,7 +156,7 @@ class ProcessingPipeline:
                     "diarization_skipped": True,
                     "diarization_skip_reason": "single_speaker",
                 }
-            elif job.diarization_enabled and not diarization_available:
+            else:
                 sentences = _assign_single_speaker(sentences)
                 job.stage_details = {
                     **job.stage_details,
