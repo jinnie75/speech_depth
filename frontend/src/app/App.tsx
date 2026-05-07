@@ -3195,7 +3195,7 @@ export function App() {
               This project is an attempt to bring this difference to attention: a reminder that we all have different patterns of expression, and to have patience toward ourselves and each other.
             </p>
             <p>
-              The system takes a dictionary-based approach to analysis.
+              The system takes a rule-based approach to analysis.
               {" "}
               The full list of hedging cues and emotional expressions it detects can be found{" "}
               <button
