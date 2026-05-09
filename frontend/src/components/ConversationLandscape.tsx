@@ -174,7 +174,7 @@ const TRANSCRIPT_LABEL_FONT_FAMILY = '"Transcript Mixed", "Noto Serif KR", serif
 const TRANSCRIPT_FONT_FACE_FAMILY = "Transcript Mixed";
 const TRANSCRIPT_FONT_SOURCES = [
   {
-    url: "/fonts/az_Jinnie.ttf",
+    url: "/fonts/custom-handwriting-en.ttf",
     unicodeRange: "U+0000-00FF, U+0100-024F, U+1E00-1EFF, U+2000-206F",
   },
   {

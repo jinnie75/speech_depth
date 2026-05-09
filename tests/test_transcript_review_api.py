@@ -141,7 +141,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
             json={
                 "conversation_title": "Design Interview",
                 "speaker_labels": {
-                    "SPEAKER_00": "Jinhee",
+                    "SPEAKER_00": "Speaker A",
                     "SPEAKER_01": "Guest",
                 },
                 "review_status": "in_progress",
@@ -158,7 +158,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["conversation_title"], "Design Interview")
-        self.assertEqual(payload["speaker_labels"]["SPEAKER_00"], "Jinhee")
+        self.assertEqual(payload["speaker_labels"]["SPEAKER_00"], "Speaker A")
         self.assertEqual(payload["review_status"], "in_progress")
         self.assertIsNotNone(payload["reviewed_at"])
         self.assertEqual(payload["sentence_units"][0]["display_text"], "Hello there, team.")
@@ -371,7 +371,7 @@ class TranscriptReviewApiTests(unittest.TestCase):
             json={
                 "conversation_title": "Monologue",
                 "speaker_labels": {
-                    "SPEAKER_00": "Jinhee",
+                    "SPEAKER_00": "Speaker A",
                 },
                 "review_status": "in_progress",
                 "sentence_overrides": [],
@@ -380,5 +380,5 @@ class TranscriptReviewApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["speaker_labels"]["SPEAKER_00"], "Jinhee")
+        self.assertEqual(payload["speaker_labels"]["SPEAKER_00"], "Speaker A")
         self.assertEqual(payload["sentence_units"][0]["display_speaker_id"], "SPEAKER_00")

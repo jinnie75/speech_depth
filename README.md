@@ -50,4 +50,4 @@ Each speaker is represented by colored contour lines.
 - Speaker regions are sized by their respective total speaking duration.
 - The active utterance is shown beneath the visualizer during playback.
 
-Custom typeface is used: English is of my own handwriting, and Korean is `야근하는 김주임체` from [NAVER CLOVA handwriting typefaces](https://clova.ai/handwriting/list.html). 
+Custom typeface is used: English uses a bundled handwriting-style font, and Korean is `야근하는 김주임체` from [NAVER CLOVA handwriting typefaces](https://clova.ai/handwriting/list.html).
