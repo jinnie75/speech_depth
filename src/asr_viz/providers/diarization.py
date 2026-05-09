@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC
+from contextlib import contextmanager
 import gc
 from dataclasses import dataclass
+from pathlib import Path
+import subprocess
+import tempfile
 
 from asr_viz.pipeline.types import SentenceCandidate
 
@@ -52,6 +56,8 @@ class SpeakerTurn:
 
 
 class PyannoteDiarizationProvider(DiarizationProvider):
+    _VIDEO_SUFFIXES = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+
     def __init__(
         self,
         *,
@@ -114,7 +120,8 @@ class PyannoteDiarizationProvider(DiarizationProvider):
                 kwargs["max_speakers"] = self._max_speakers
 
         try:
-            diarization = self._pipeline(source_uri, **kwargs)
+            with self._pipeline_source(source_uri) as pipeline_source_uri:
+                diarization = self._pipeline(pipeline_source_uri, **kwargs)
         except Exception as exc:  # pragma: no cover - depends on optional dependency behavior
             raise _normalize_diarization_error(exc, model_name=self._model_name) from exc
         turns: list[SpeakerTurn] = []
@@ -131,6 +138,58 @@ class PyannoteDiarizationProvider(DiarizationProvider):
     def release_resources(self) -> None:
         self._pipeline = None
         gc.collect()
+
+    def _pipeline_source(self, source_uri: str):
+        if not self._should_extract_audio_first(source_uri):
+            return _passthrough_context(source_uri)
+        normalized_source_uri = self._normalize_source_uri(source_uri)
+        return self._fallback_diarization_source(normalized_source_uri)
+
+    def _normalize_source_uri(self, source_uri: str) -> str:
+        path = Path(source_uri).expanduser()
+        if path.exists():
+            return str(path.resolve())
+        return source_uri
+
+    def _should_extract_audio_first(self, source_uri: str) -> bool:
+        path = Path(source_uri)
+        return path.exists() and path.is_file() and path.suffix.lower() in self._VIDEO_SUFFIXES
+
+    @contextmanager
+    def _fallback_diarization_source(self, source_uri: str):
+        source_path = Path(source_uri)
+        if not source_path.exists() or not source_path.is_file():
+            yield source_uri
+            return
+
+        with tempfile.TemporaryDirectory(prefix="asr-viz-diarization-") as temp_dir:
+            extracted_audio_path = Path(temp_dir) / f"{source_path.stem}.wav"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(source_path),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    str(extracted_audio_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            yield str(extracted_audio_path)
+
+
+@contextmanager
+def _passthrough_context(value: str):
+    yield value
 
 
 def assign_speakers_by_overlap(

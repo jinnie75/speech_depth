@@ -11,6 +11,7 @@ import asr_viz.db.session as db_session_module
 import asr_viz.services.streaming as streaming_module
 from asr_viz.db.base import Base
 from asr_viz.models.job import ProcessingJob
+from asr_viz.models.stream import StreamIngestionSession
 from asr_viz.providers.analysis_v2 import HeuristicAnalysisProvider
 from asr_viz.providers.diarization import NoOpDiarizationProvider
 from asr_viz.providers.transcription import MockTranscriptionProvider
@@ -192,3 +193,43 @@ class StreamingIngestionTests(unittest.TestCase):
         second_client = TestClient(api_main.app)
         second_status_response = second_client.get(f"/stream-sessions/{session_id}")
         self.assertEqual(second_status_response.status_code, 404)
+
+    def test_stream_session_persists_diarization_flag_for_requested_speaker_count(self) -> None:
+        client = TestClient(api_main.app)
+
+        single_speaker_response = client.post(
+            "/stream-sessions",
+            json={
+                "mime_type": "audio/wav",
+                "original_filename": "single-speaker.wav",
+                "ingest_metadata": {"diarization_num_speakers": 1},
+            },
+            headers={"x-asr-viz-user-id": "test-user"},
+        )
+        self.assertEqual(single_speaker_response.status_code, 201)
+
+        multi_speaker_response = client.post(
+            "/stream-sessions",
+            json={
+                "mime_type": "audio/wav",
+                "original_filename": "multi-speaker.wav",
+                "ingest_metadata": {"diarization_num_speakers": 2},
+            },
+            headers={"x-asr-viz-user-id": "test-user"},
+        )
+        self.assertEqual(multi_speaker_response.status_code, 201)
+
+        with self.session_factory() as session:
+            single_speaker_session = session.get(
+                StreamIngestionSession,
+                single_speaker_response.json()["id"],
+            )
+            multi_speaker_session = session.get(
+                StreamIngestionSession,
+                multi_speaker_response.json()["id"],
+            )
+
+            self.assertIsNotNone(single_speaker_session)
+            self.assertIsNotNone(multi_speaker_session)
+            self.assertFalse(single_speaker_session.diarization_enabled)
+            self.assertTrue(multi_speaker_session.diarization_enabled)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from asr_viz.db.base import Base
@@ -19,6 +19,12 @@ class ProcessingJob(IdMixin, OwnerMixin, TimestampMixin, Base):
     current_stage: Mapped[str] = mapped_column(String(32), default=JobStage.INGESTION.value, nullable=False)
     error_message: Mapped[str | None] = mapped_column(String(2048))
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    diarization_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
     asr_model_version: Mapped[str | None] = mapped_column(String(255))
     diarization_model_version: Mapped[str | None] = mapped_column(String(255))
     analysis_model_version: Mapped[str | None] = mapped_column(String(255))

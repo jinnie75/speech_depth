@@ -24,6 +24,7 @@ def create_job(
     resolved_owner_user_id = owner_user_id or settings.auth_dev_user_id
     resolved_checksum = checksum or checksum_for_local_file(source_uri)
     size_bytes = _resolve_size_bytes(source_uri, source_type)
+    normalized_ingest_metadata = ingest_metadata or {}
     media_asset = MediaAsset(
         owner_user_id=resolved_owner_user_id,
         source_uri=source_uri,
@@ -31,7 +32,7 @@ def create_job(
         mime_type=mime_type,
         checksum=resolved_checksum,
         size_bytes=size_bytes,
-        ingest_metadata=ingest_metadata or {},
+        ingest_metadata=normalized_ingest_metadata,
     )
     session.add(media_asset)
     session.flush()
@@ -41,6 +42,7 @@ def create_job(
         media_asset_id=media_asset.id,
         status=JobStatus.QUEUED.value,
         current_stage=JobStage.INGESTION.value,
+        diarization_enabled=_should_enable_diarization(normalized_ingest_metadata),
         stage_details={"status": "queued"},
     )
     session.add(job)
@@ -65,3 +67,20 @@ def _resolve_size_bytes(source_uri: str, source_type: str) -> int | None:
     if not path.exists() or not path.is_file():
         return None
     return path.stat().st_size
+
+
+def _should_enable_diarization(ingest_metadata: dict) -> bool:
+    explicit_value = ingest_metadata.get("diarization_num_speakers")
+    if explicit_value is not None:
+        try:
+            return int(explicit_value) != 1
+        except (TypeError, ValueError):
+            pass
+
+    speaker_mode = ingest_metadata.get("speaker_mode")
+    if speaker_mode == "monologue":
+        return False
+    if speaker_mode == "dialogue":
+        return True
+
+    return settings.enable_diarization

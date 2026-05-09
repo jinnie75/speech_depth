@@ -14,6 +14,33 @@ from asr_viz.models.job import ProcessingJob
 from asr_viz.models.media import MediaAsset
 
 
+def project_root_dir() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def media_storage_root() -> Path:
+    configured_path = Path(settings.media_storage_dir).expanduser()
+    if configured_path.is_absolute():
+        return configured_path
+    return (project_root_dir() / configured_path).resolve()
+
+
+def resolve_local_media_path(path_value: str) -> Path:
+    candidate = Path(path_value).expanduser()
+    if candidate.is_absolute():
+        return candidate
+
+    project_relative_candidate = (project_root_dir() / candidate).resolve()
+    if project_relative_candidate.exists():
+        return project_relative_candidate
+
+    storage_relative_candidate = (media_storage_root() / candidate).resolve()
+    if storage_relative_candidate.exists():
+        return storage_relative_candidate
+
+    return project_relative_candidate
+
+
 def configured_storage_backend() -> str:
     return str(getattr(settings, "storage_backend", "local") or "local").strip().lower()
 
@@ -28,9 +55,9 @@ def upload_local_file_to_configured_storage(
     mime_type: str | None,
 ) -> tuple[str, str]:
     if configured_storage_backend() != "r2":
-        return "file", local_path
+        return "file", str(resolve_local_media_path(local_path))
 
-    path = Path(local_path)
+    path = resolve_local_media_path(local_path)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"media file not found: {local_path}")
 
@@ -47,7 +74,7 @@ def upload_local_file_to_configured_storage(
 
 def resolve_media_source(job: ProcessingJob, media_asset: MediaAsset) -> str:
     if media_asset.source_type == "r2" or media_asset.source_uri.startswith("r2://"):
-        storage_dir = Path(settings.media_storage_dir) / "r2_cache"
+        storage_dir = media_storage_root() / "r2_cache"
         storage_dir.mkdir(parents=True, exist_ok=True)
         object_key = _parse_r2_uri(media_asset.source_uri)[1]
         suffix = Path(object_key).suffix or Path(media_asset.source_uri).suffix or ".bin"
@@ -57,13 +84,13 @@ def resolve_media_source(job: ProcessingJob, media_asset: MediaAsset) -> str:
         return str(destination)
 
     if media_asset.source_type == "file":
-        path = Path(media_asset.source_uri)
+        path = resolve_local_media_path(media_asset.source_uri)
         if not path.exists():
             raise FileNotFoundError(f"media file not found: {media_asset.source_uri}")
         return str(path)
 
     if media_asset.source_type == "url":
-        storage_dir = Path(settings.media_storage_dir)
+        storage_dir = media_storage_root()
         storage_dir.mkdir(parents=True, exist_ok=True)
         suffix = Path(urlparse(media_asset.source_uri).path).suffix or ".bin"
         destination = storage_dir / f"{job.id}{suffix}"
@@ -93,7 +120,7 @@ def build_media_response(media_asset: MediaAsset, *, filename: str | None = None
             headers=headers,
         )
 
-    media_path = Path(source_uri)
+    media_path = resolve_local_media_path(source_uri)
     if not media_path.exists() or not media_path.is_file():
         raise FileNotFoundError(f"media file not found: {source_uri}")
 
@@ -105,7 +132,7 @@ def build_media_response(media_asset: MediaAsset, *, filename: str | None = None
 
 
 def checksum_for_local_file(source_uri: str) -> str | None:
-    path = Path(source_uri)
+    path = resolve_local_media_path(source_uri)
     if not path.exists() or not path.is_file():
         return None
 
@@ -117,7 +144,7 @@ def checksum_for_local_file(source_uri: str) -> str | None:
 
 
 def remove_local_media_file(source_uri: str) -> None:
-    path = Path(source_uri)
+    path = resolve_local_media_path(source_uri)
     if not path.exists():
         return
 

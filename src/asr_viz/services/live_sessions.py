@@ -14,6 +14,7 @@ from asr_viz.models.transcript import SentenceUnit, Transcript
 from asr_viz.services.archive_previews import update_transcript_archive_preview
 from asr_viz.services.media import (
     checksum_for_local_file,
+    media_storage_root,
     remove_local_media_file,
     upload_local_file_to_configured_storage,
 )
@@ -44,7 +45,7 @@ def create_live_session(
     session_metadata: dict | None,
 ) -> LiveSession:
     resolved_owner_user_id = owner_user_id or settings.auth_dev_user_id
-    storage_dir = Path(settings.media_storage_dir) / "live_sessions"
+    storage_dir = media_storage_root() / "live_sessions"
     storage_dir.mkdir(parents=True, exist_ok=True)
 
     live_session = LiveSession(

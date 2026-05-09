@@ -1253,7 +1253,11 @@ function describeStreamStatus(streamSession: StreamSessionResponse | null, uploa
   return streamSession.status;
 }
 
-function describeProcessingProgress(streamSession: StreamSessionResponse | null, uploadProgress: number | null): string | null {
+function describeProcessingProgress(
+  streamSession: StreamSessionResponse | null,
+  uploadProgress: number | null,
+  transcriptLoadStatus: "idle" | "loading" | "ready" | "empty",
+): string | null {
   if (!streamSession) {
     return null;
   }
@@ -1281,6 +1285,9 @@ function describeProcessingProgress(streamSession: StreamSessionResponse | null,
   }
 
   if (streamSession.status === "completed") {
+    if (transcriptLoadStatus === "loading") {
+      return "95% complete · Loading transcript";
+    }
     return "100% complete · Transcript ready";
   }
 
@@ -1842,7 +1849,11 @@ export function App() {
     if (!streamSession?.id) {
       return;
     }
-    if (!["queued", "processing"].includes(streamSession.status)) {
+    const shouldPoll =
+      ["queued", "processing"].includes(streamSession.status) ||
+      (streamSession.status === "completed" &&
+        (transcriptLoadStatus === "loading" || streamSession.transcript_id === null));
+    if (!shouldPoll) {
       return;
     }
 
@@ -1862,16 +1873,28 @@ export function App() {
 
         if (nextSession.status === "completed" && nextSession.transcript_id) {
           setTranscriptLoadStatus("loading");
+          setStreamSession(nextSession);
+          setError(null);
           let loadedDocument: PlaybackDocument | null = null;
+          let transcriptLoadError: Error | null = null;
 
           for (let attempt = 0; attempt < TRANSCRIPT_RETRY_LIMIT; attempt += 1) {
-            const nextDocument = await loadPlaybackDocument(nextSession.transcript_id);
+            try {
+              const nextDocument = await loadPlaybackDocument(nextSession.transcript_id);
+              if (!active || pollingSessionIdRef.current !== streamSession.id) {
+                return;
+              }
+              playbackDocumentCacheRef.current.set(nextSession.transcript_id, nextDocument);
+              loadedDocument = nextDocument;
+              break;
+            } catch (caughtError: unknown) {
+              transcriptLoadError =
+                caughtError instanceof Error ? caughtError : new Error("Unknown transcript loading error");
+            }
             if (!active || pollingSessionIdRef.current !== streamSession.id) {
               return;
             }
-            if (nextDocument.sentenceUnits.length > 0) {
-              playbackDocumentCacheRef.current.set(nextSession.transcript_id, nextDocument);
-              loadedDocument = nextDocument;
+            if (attempt === TRANSCRIPT_RETRY_LIMIT - 1) {
               break;
             }
             await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
@@ -1885,7 +1908,7 @@ export function App() {
             setDocument(loadedDocument);
             setStreamSession(nextSession);
             setSelectedProcessedTranscriptId(nextSession.transcript_id);
-            setTranscriptLoadStatus("ready");
+            setTranscriptLoadStatus(loadedDocument.sentenceUnits.length > 0 ? "ready" : "empty");
             setError(null);
             setUploadProgress(1);
             setMode("review");
@@ -1893,9 +1916,17 @@ export function App() {
             return;
           }
 
-          setTranscriptLoadStatus("empty");
           setStreamSession(nextSession);
-          setError("Transcript finished processing, but no sentence units were returned by the API.");
+          setError(
+            transcriptLoadError?.message || "Transcript finished processing, but could not be loaded from the API yet.",
+          );
+          return;
+        }
+
+        if (nextSession.status === "completed" && nextSession.transcript_id === null) {
+          setTranscriptLoadStatus("loading");
+          setStreamSession(nextSession);
+          window.setTimeout(poll, POLL_INTERVAL_MS);
           return;
         }
 
@@ -1919,7 +1950,7 @@ export function App() {
       active = false;
       window.clearTimeout(timeoutId);
     };
-  }, [streamSession?.id, streamSession?.status]);
+  }, [streamSession?.id, streamSession?.status, streamSession?.transcript_id, transcriptLoadStatus]);
 
   useEffect(() => {
     if (!isMediaPlaying) {
@@ -1965,7 +1996,9 @@ export function App() {
   const speakers = shouldBuildConversationState ? buildSpeakerSummaries(utterances, speakerLabels) : [];
   const isReviewDirty = mode === "review" ? isReviewDraftDirty(document, reviewDraft) : false;
   const isTranscriptProcessing =
-    streamSession !== null && ["open", "queued", "processing"].includes(streamSession.status);
+    streamSession !== null &&
+    (["open", "queued", "processing"].includes(streamSession.status) ||
+      (streamSession.status === "completed" && transcriptLoadStatus === "loading"));
   const isUploadActionLocked = isUploading || isTranscriptProcessing;
   const hasMoreArchives = processedTranscriptOptions.length < archiveTotalCount;
   const marginNotes = shouldBuildConversationState ? buildMarginNotes(utterances) : [];
@@ -3040,7 +3073,8 @@ export function App() {
                   <h3>Processing...</h3>
                   <div className="upload-processing__bar" aria-hidden="true" />
                   <p className="upload-processing__copy">
-                    {describeProcessingProgress(streamSession, uploadProgress) ?? "Your transcript is processing."}
+                    {describeProcessingProgress(streamSession, uploadProgress, transcriptLoadStatus) ??
+                      "Your transcript is processing."}
                   </p>
                 </div>
               ) : !pendingFile ? (

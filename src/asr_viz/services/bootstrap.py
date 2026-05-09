@@ -1,4 +1,4 @@
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from asr_viz.db.base import Base
 from asr_viz.core.settings import settings
@@ -27,7 +27,42 @@ def _assert_schema_compatibility() -> None:
         )
 
 
+def _ensure_schema_compatibility() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    if "stream_ingestion_sessions" not in table_names:
+        stream_columns = set()
+    else:
+        stream_columns = {column["name"] for column in inspector.get_columns("stream_ingestion_sessions")}
+
+    if "diarization_enabled" not in stream_columns and "stream_ingestion_sessions" in table_names:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE stream_ingestion_sessions "
+                    "ADD COLUMN diarization_enabled BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+
+    if "processing_jobs" not in table_names:
+        return
+
+    job_columns = {column["name"] for column in inspector.get_columns("processing_jobs")}
+    if "diarization_enabled" in job_columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE processing_jobs "
+                "ADD COLUMN diarization_enabled BOOLEAN NOT NULL DEFAULT 0"
+            )
+        )
+
+
 def init_db() -> None:
     _assert_schema_compatibility()
     if settings.auto_create_schema:
         Base.metadata.create_all(bind=engine)
+        _ensure_schema_compatibility()

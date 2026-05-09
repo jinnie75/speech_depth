@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 import gc
 from pathlib import Path
+import subprocess
+import tempfile
+import time
 from typing import Literal
 
 from asr_viz.pipeline.types import ASRSegment, ASRWord, TranscriptResult
@@ -26,6 +30,9 @@ class TranscriptionProvider(ABC):
 
 
 class FasterWhisperTranscriptionProvider(TranscriptionProvider):
+    _VIDEO_SUFFIXES = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+    _TRANSIENT_MEDIA_OPEN_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0)
+
     def __init__(
         self,
         model_size: str,
@@ -64,11 +71,12 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
         source_uri: str,
         preferred_language: PreferredLanguage | None = None,
     ) -> TranscriptResult:
-        model = self._get_model()
+        normalized_source_uri = self._normalize_source_uri(source_uri)
         transcribe_kwargs = {"word_timestamps": True}
         if preferred_language and preferred_language != "auto":
             transcribe_kwargs["language"] = preferred_language
-        segments, info = model.transcribe(source_uri, **transcribe_kwargs)
+
+        segments, info = self._transcribe_with_targeted_retries(normalized_source_uri, transcribe_kwargs)
 
         parsed_segments: list[ASRSegment] = []
         text_parts: list[str] = []
@@ -104,6 +112,87 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
             segments=parsed_segments,
             metadata={"duration": getattr(info, "duration", None)},
         )
+
+    def _normalize_source_uri(self, source_uri: str) -> str:
+        path = Path(source_uri).expanduser()
+        if path.exists():
+            return str(path.resolve())
+        return source_uri
+
+    def _transcribe_with_model(self, model, source_uri: str, transcribe_kwargs: dict) -> tuple[list, object]:
+        segments, info = model.transcribe(source_uri, **transcribe_kwargs)
+        return list(segments), info
+
+    def _transcribe_with_targeted_retries(self, source_uri: str, transcribe_kwargs: dict) -> tuple[list, object]:
+        attempts_remaining = len(self._TRANSIENT_MEDIA_OPEN_RETRY_DELAYS_SECONDS)
+
+        while True:
+            model = self._get_model()
+            try:
+                if self._should_extract_audio_first(source_uri):
+                    with self._fallback_transcription_source(source_uri) as extracted_source_uri:
+                        if extracted_source_uri is None:
+                            raise RuntimeError(f"unable to extract audio from {source_uri}")
+                        return self._transcribe_with_model(model, extracted_source_uri, transcribe_kwargs)
+                return self._transcribe_with_model(model, source_uri, transcribe_kwargs)
+            except Exception as exc:
+                if not self._should_retry_with_extracted_audio(source_uri, exc) or attempts_remaining <= 0:
+                    raise
+                retry_index = len(self._TRANSIENT_MEDIA_OPEN_RETRY_DELAYS_SECONDS) - attempts_remaining
+                retry_delay = self._TRANSIENT_MEDIA_OPEN_RETRY_DELAYS_SECONDS[retry_index]
+                attempts_remaining -= 1
+                self.release_resources()
+                time.sleep(retry_delay)
+
+    def _should_extract_audio_first(self, source_uri: str) -> bool:
+        path = Path(source_uri)
+        return path.exists() and path.is_file() and path.suffix.lower() in self._VIDEO_SUFFIXES
+
+    def _should_retry_with_extracted_audio(self, source_uri: str, exc: Exception) -> bool:
+        path = Path(source_uri)
+        if not path.exists() or not path.is_file():
+            return False
+
+        normalized_message = str(exc).lower()
+        retry_markers = (
+            "error opening",
+            "format not recognised",
+            "format not recognized",
+            "invalid data found",
+            "moov atom not found",
+        )
+        return any(marker in normalized_message for marker in retry_markers)
+
+    @contextmanager
+    def _fallback_transcription_source(self, source_uri: str):
+        source_path = Path(source_uri)
+        if not source_path.exists() or not source_path.is_file():
+            yield None
+            return
+
+        with tempfile.TemporaryDirectory(prefix="asr-viz-transcription-") as temp_dir:
+            extracted_audio_path = Path(temp_dir) / f"{source_path.stem}.wav"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(source_path),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    str(extracted_audio_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            yield str(extracted_audio_path)
 
     def release_resources(self) -> None:
         self._model = None

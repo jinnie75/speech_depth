@@ -10,6 +10,7 @@ from asr_viz.models.stream import StreamIngestionSession
 from asr_viz.services.jobs import create_job
 from asr_viz.services.media import (
     checksum_for_local_file,
+    media_storage_root,
     remove_local_media_file,
     upload_local_file_to_configured_storage,
 )
@@ -36,8 +37,9 @@ def create_stream_session(
     ingest_metadata: dict | None,
 ) -> StreamIngestionSession:
     resolved_owner_user_id = owner_user_id or settings.auth_dev_user_id
-    storage_dir = Path(settings.media_storage_dir) / "stream_ingestion"
+    storage_dir = media_storage_root() / "stream_ingestion"
     storage_dir.mkdir(parents=True, exist_ok=True)
+    normalized_ingest_metadata = ingest_metadata or {}
 
     session_record = StreamIngestionSession(
         owner_user_id=resolved_owner_user_id,
@@ -45,7 +47,8 @@ def create_stream_session(
         mime_type=mime_type,
         original_filename=original_filename,
         storage_path=str(storage_dir / _build_storage_filename("pending", original_filename, mime_type)),
-        ingest_metadata=ingest_metadata or {},
+        diarization_enabled=_should_enable_diarization(normalized_ingest_metadata),
+        ingest_metadata=normalized_ingest_metadata,
     )
     session.add(session_record)
     session.flush()
@@ -134,10 +137,14 @@ def refresh_stream_session_status(stream_session: StreamIngestionSession) -> Non
 
     if job.status == JobStatus.QUEUED.value:
         stream_session.status = "queued"
+        stream_session.error_message = None
     elif job.status == JobStatus.PROCESSING.value:
         stream_session.status = "processing"
+        stream_session.error_message = None
     elif job.status == JobStatus.COMPLETED.value:
-        stream_session.status = "completed"
+        # Keep polling until the completed job is actually attached to a transcript.
+        stream_session.status = "completed" if job.transcript_id else "processing"
+        stream_session.error_message = None
     elif job.status == JobStatus.FAILED.value:
         stream_session.status = "failed"
         stream_session.error_message = job.error_message
@@ -147,3 +154,20 @@ def _build_storage_filename(session_id: str, original_filename: str | None, mime
     provided_suffix = Path(original_filename or "").suffix
     suffix = provided_suffix or _MIME_EXTENSIONS.get((mime_type or "").lower(), ".bin")
     return f"{session_id}{suffix}"
+
+
+def _should_enable_diarization(ingest_metadata: dict) -> bool:
+    explicit_value = ingest_metadata.get("diarization_num_speakers")
+    if explicit_value is not None:
+        try:
+            return int(explicit_value) != 1
+        except (TypeError, ValueError):
+            pass
+
+    speaker_mode = ingest_metadata.get("speaker_mode")
+    if speaker_mode == "monologue":
+        return False
+    if speaker_mode == "dialogue":
+        return True
+
+    return settings.enable_diarization

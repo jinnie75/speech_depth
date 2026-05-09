@@ -171,6 +171,17 @@ const VIEWBOX_WIDTH = 1200;
 const VIEWBOX_HEIGHT = 620;
 const FALL_DISTANCE_Y = 248;
 const TRANSCRIPT_LABEL_FONT_FAMILY = '"Transcript Mixed", "Noto Serif KR", serif';
+const TRANSCRIPT_FONT_FACE_FAMILY = "Transcript Mixed";
+const TRANSCRIPT_FONT_SOURCES = [
+  {
+    url: "/fonts/az_Jinnie.ttf",
+    unicodeRange: "U+0000-00FF, U+0100-024F, U+1E00-1EFF, U+2000-206F",
+  },
+  {
+    url: "/fonts/nanum-yagun-kimjooim.ttf",
+    unicodeRange: "U+1100-11FF, U+3130-318F, U+AC00-D7AF, U+A960-A97F, U+D7B0-D7FF",
+  },
+] as const;
 const TRANSCRIPT_LABEL_FONT_SIZE = "0.72rem";
 const TRANSCRIPT_LABEL_FONT_WEIGHT = 500;
 const TRANSCRIPT_LABEL_LETTER_SPACING = "0.14em";
@@ -196,6 +207,7 @@ const CONTOUR_STROKE_ACCENT_OPACITY = 0.58;
 const CONTOUR_STROKE_ROUGHNESS_UNDERLAY = 2.2;
 const CONTOUR_STROKE_ROUGHNESS_CORE = 1.1;
 const CONTOUR_STROKE_ROUGHNESS_ACCENT = 1.6;
+let embeddedTranscriptFontFaceCssPromise: Promise<string> | null = null;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -229,6 +241,45 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+async function loadEmbeddedTranscriptFontFaceCss(): Promise<string> {
+  if (embeddedTranscriptFontFaceCssPromise) {
+    return embeddedTranscriptFontFaceCssPromise;
+  }
+
+  embeddedTranscriptFontFaceCssPromise = (async () => {
+    const fontFaceRules = await Promise.all(
+      TRANSCRIPT_FONT_SOURCES.map(async ({ url, unicodeRange }) => {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Failed to load transcript font asset: ${url}`);
+        }
+        const buffer = await response.arrayBuffer();
+        const encodedFont = toBase64(new Uint8Array(buffer));
+        return `@font-face{font-family:"${TRANSCRIPT_FONT_FACE_FAMILY}";src:url(data:font/ttf;base64,${encodedFont}) format("truetype");font-style:normal;font-weight:400;unicode-range:${unicodeRange};}`;
+      }),
+    );
+
+    return fontFaceRules.join("");
+  })();
+
+  try {
+    return await embeddedTranscriptFontFaceCssPromise;
+  } catch (error) {
+    embeddedTranscriptFontFaceCssPromise = null;
+    throw error;
+  }
 }
 
 function formatSpeakerLabelText(value: string): string {
@@ -1644,6 +1695,8 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
           await document.fonts.ready;
         }
 
+        const embeddedTranscriptFontFaceCss = await loadEmbeddedTranscriptFontFaceCss();
+
         const scaleX = canvasWidth / VIEWBOX_WIDTH;
         const scaleY = canvasHeight / VIEWBOX_HEIGHT;
         const speakerLabelMarkup = snapshotMode === "final" && speakerSections.length > 1
@@ -1697,6 +1750,11 @@ export const ConversationLandscape = forwardRef<ConversationLandscapeHandle, Con
           .join("");
         const svgMarkup = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}" viewBox="0 0 ${canvasWidth} ${canvasHeight}" role="img" aria-label="Conversation landscape final snapshot">
+  <defs>
+    <style>
+      ${embeddedTranscriptFontFaceCss}
+    </style>
+  </defs>
   <rect width="${canvasWidth}" height="${canvasHeight}" fill="#fbf7ef" />
   <g transform="scale(${scaleX} ${scaleY})">
     ${terrainMarkup}

@@ -1,4 +1,7 @@
 import unittest
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 from asr_viz.providers.diarization import (
@@ -85,6 +88,26 @@ class PyannoteProviderTests(unittest.TestCase):
         turns = provider._extract_turns("/tmp/example.wav")
 
         self.assertEqual(fake_pipeline.calls, [("/tmp/example.wav", {"min_speakers": 1, "max_speakers": 2})])
+        self.assertEqual(turns, [SpeakerTurn(speaker_id="SPEAKER_00", start_ms=0, end_ms=1000)])
+
+    def test_extract_turns_extracts_audio_first_for_video_sources(self) -> None:
+        provider = PyannoteDiarizationProvider(model_name="test-model", token="token", num_speakers=2)
+        fake_pipeline = _FakePipeline()
+        provider._pipeline = fake_pipeline
+
+        @contextmanager
+        def fake_fallback(_source_uri: str):
+            yield "/tmp/extracted-audio.wav"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_path = Path(tmp_dir) / "sample.mov"
+            sample_path.write_bytes(b"not-a-real-mov")
+
+            with patch.object(provider, "_fallback_diarization_source", side_effect=fake_fallback) as fallback_mock:
+                turns = provider._extract_turns(str(sample_path))
+
+        self.assertEqual(fake_pipeline.calls, [("/tmp/extracted-audio.wav", {"num_speakers": 2})])
+        fallback_mock.assert_called_once_with(str(sample_path.resolve()))
         self.assertEqual(turns, [SpeakerTurn(speaker_id="SPEAKER_00", start_ms=0, end_ms=1000)])
 
     def test_normalized_access_error_preserves_original_exception_details(self) -> None:

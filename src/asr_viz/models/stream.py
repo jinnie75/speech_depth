@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import JSON, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from asr_viz.db.base import Base
@@ -16,6 +16,12 @@ class StreamIngestionSession(IdMixin, OwnerMixin, TimestampMixin, Base):
     storage_path: Mapped[str] = mapped_column(String(2048), nullable=False)
     total_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     received_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    diarization_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
     ingest_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     error_message: Mapped[str | None] = mapped_column(String(2048))
     processing_job_id: Mapped[str | None] = mapped_column(ForeignKey("processing_jobs.id"), unique=True)
